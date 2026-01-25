@@ -1,7 +1,7 @@
 [project]
 name = "zrag"
 version = "0.1.0"
-description = "LLM-as-Memory: Vector DB를 Local LLM으로 대체하는 연구 프로젝트"
+description = "LLM-as-Memory: Replacing Vector DB with Internal LLM Memory"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

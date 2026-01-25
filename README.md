@@ -1,34 +1,34 @@
 # zRAG: LLM-as-Memory
 
-> **Vector DB를 Local LLM의 내부 Memory로 대체하는 연구**
+> **Replacing Vector DB with Internal LLM Memory**
 
-기존 RAG의 "Retriever + Vector DB" 파이프라인을 제거하고, LLM 내부의 **learnable memory vectors**로 대체하여 evidence를 생성하는 시스템입니다.
+This project replaces the traditional "Retriever + Vector DB" pipeline in RAG systems with **learnable memory vectors** inside a Local LLM to generate evidence directly.
 
-## 핵심 아이디어
+## Core Idea
 
 ```
-기존 RAG:
+Traditional RAG:
 Query → [Retriever] → Vector DB → Retrieved Text → LLM → Answer
               ↑
-         외부 모듈
+        External Module
 
 LLM-as-Memory (Ours):
 Query → [Local LLM + Internal Memory Z] → Evidence → ChatGPT → Answer
                     ↑
-              외부 모듈 없음
-              내부 routing으로 z 선택
+              No External Module
+              Internal routing selects z
 ```
 
-### 핵심 차별점
+### Key Differences
 
-| 기존 RAG | LLM-as-Memory |
-|----------|---------------|
-| 외부 Retriever 필요 | **Retriever 제거** |
-| Vector DB에 텍스트 저장 | **z_i (벡터)로 압축 저장** |
-| Embedding similarity 검색 | **LLM 내부 attention routing** |
-| Retrieved text → LLM → Answer | **Evidence 생성 → ChatGPT → Answer** |
+| Traditional RAG | LLM-as-Memory |
+|-----------------|---------------|
+| Requires external retriever | **No retriever** |
+| Stores text in Vector DB | **Compressed into z vectors** |
+| Embedding similarity search | **LLM internal attention routing** |
+| Retrieved text → LLM → Answer | **Evidence generation → ChatGPT → Answer** |
 
-## 아키텍처
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -37,95 +37,93 @@ Query → [Local LLM + Internal Memory Z] → Evidence → ChatGPT → Answer
 │   Memory Pool: Z = {z₁, z₂, ..., zₙ}                       │
 │   (N docs × 4 tokens × 256 dim = learnable vectors)        │
 │                                                             │
-│   Query ──→ [내부 Attention over Z] ──→ Evidence (텍스트)   │
+│   Query ──→ [Internal Attention over Z] ──→ Evidence (text) │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
               Query + Evidence ──→ ChatGPT ──→ Answer
 ```
 
-### 학습 목표
+### Training Objective
 
 ```
 L = -log P(evidence | query, Z; θ)
 ```
 
-- **θ**: Local LLM 파라미터 (QLoRA)
-- **Z**: 문서별 learnable memory vectors
-- **evidence**: 생성할 근거 텍스트
+- **θ**: Local LLM parameters (QLoRA)
+- **Z**: Per-document learnable memory vectors
+- **evidence**: Target text to generate
 
 ## Quick Start
 
-### 설치
+### Installation
 
 ```bash
-# uv 사용 (권장)
+# Using uv (recommended)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 cd zrag
 uv sync
 
-# 또는 pip 사용
+# Or using pip
 pip install -e .
 ```
 
-### 테스트
+### Test
 
 ```bash
-# 최소 테스트 (의존성 없이)
+# Minimal test (no heavy dependencies)
 uv run python scripts/test_integration.py --minimal
 
-# 전체 테스트 (GPU 필요)
+# Full test (requires GPU)
 uv run python scripts/test_integration.py --full
 ```
 
-### 학습
+### Training
 
 ```bash
 uv run python training/train_evidence.py --config configs/evidence_poc.yaml
 ```
 
-## 프로젝트 구조
+## Project Structure
 
 ```
 zrag/
-├── models/                      # 모델 구현
-│   ├── parametric_memory_llm.py # 핵심 모델 (Z prefix + Evidence 생성)
-│   ├── evidence_trainer.py      # 학습기
-│   └── legacy/                  # 레거시 코드
-├── data/                        # 데이터 처리
-│   └── evidence_dataloader.py   # Evidence 학습용 DataLoader
-├── training/                    # 학습 스크립트
-│   └── train_evidence.py        # 메인 학습 스크립트
-├── evaluation/                  # 평가
-│   ├── evidence_metrics.py      # Evidence 품질 메트릭 (ROUGE-L, Answer Coverage)
-│   └── evaluate_qa.py           # QA 및 Evidence 평가
-├── baselines/                   # Baseline 구현
+├── models/                      # Model implementations
+│   ├── parametric_memory_llm.py # Core model (Z prefix + Evidence generation)
+│   ├── evidence_trainer.py      # Trainer
+│   └── legacy/                  # Legacy code
+├── data/                        # Data processing
+│   └── evidence_dataloader.py   # Evidence training DataLoader
+├── training/                    # Training scripts
+│   └── train_evidence.py        # Main training script
+├── evaluation/                  # Evaluation
+│   ├── evidence_metrics.py      # Evidence quality metrics (ROUGE-L, Answer Coverage)
+│   └── evaluate_qa.py           # QA and Evidence evaluation
+├── baselines/                   # Baseline implementations
 │   └── standard_rag.py          # Dense/BM25 RAG Baseline
-├── configs/                     # 설정 파일
-│   └── evidence_poc.yaml        # POC 설정
-├── docs/                        # 문서
-│   └── LLM-as-Memory 실험 설계서.md
-└── scripts/                     # 유틸리티
-    └── test_integration.py      # 통합 테스트
+├── configs/                     # Configuration files
+│   └── evidence_poc.yaml        # POC configuration
+└── scripts/                     # Utilities
+    └── test_integration.py      # Integration test
 ```
 
-## 설정 (POC)
+## Configuration (POC)
 
-| 파라미터 | 값 | 설명 |
-|----------|-----|------|
-| `num_docs` | 2,000 | 저장 가능한 문서 수 |
-| `m_tokens` | 4 | 문서당 memory token 수 |
-| `z_dim` | 256 | Memory vector 차원 |
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `num_docs` | 2,000 | Number of documents to store |
+| `m_tokens` | 4 | Memory tokens per document |
+| `z_dim` | 256 | Memory vector dimension |
 | `llm` | Qwen3-8B | Local LLM (QLoRA 4-bit) |
 
-## 의존성
+## Requirements
 
 - Python 3.10+
 - PyTorch 2.1+
 - Transformers, PEFT, bitsandbytes
-- CUDA GPU (학습/추론용)
+- CUDA GPU (for training/inference)
 
-## 참고 문헌
+## References
 
 - Soft Prompt: Prompt Tuning, P-tuning v2, Prefix Tuning
 - Generative Retrieval: DSI, DSI++

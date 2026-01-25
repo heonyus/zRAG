@@ -1,0 +1,61 @@
+# Phase 1: Proof of Concept
+# 목표: z_i learning 작동 확인
+
+model:
+  llm_name: "Qwen/Qwen3-8B"
+  quantization: "4bit"  # QLoRA
+  lora:
+    r: 32
+    alpha: 64
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    dropout: 0.05
+
+parametric_qa:
+  num_docs: 5000
+  z_dim: 256
+  m_tokens: 8
+  selection_method: "cosine"  # cosine | learned_router | attention
+
+data:
+  dataset: "natural_questions"
+  corpus_size: 5000
+  train_samples: 1000
+  eval_samples: 500
+  max_doc_length: 512
+  max_query_length: 128
+
+write_phase:
+  epochs: 100
+  lr: 1e-3
+  optimizer: "adamw"
+  llm_frozen: true
+  batch_size: 4
+  log_every: 50
+
+read_phase:
+  epochs: 3
+  lr_llm: 2e-5
+  lr_z: 1e-3
+  lr_proj: 1e-4
+  alpha_retrieval: 0.1  # retrieval loss weight
+  batch_size: 2
+  gradient_accumulation: 8
+  warmup_ratio: 0.1
+  top_k: 5
+
+evaluation:
+  metrics: ["em", "f1", "recall_at_k", "perplexity"]
+  seeds: [42, 123, 456]
+
+hardware:
+  device: "cuda"
+  fp16: true
+  gradient_checkpointing: true
+  max_memory: "22GB"
+
+logging:
+  project: "parametric-qa"
+  run_name: "phase1-poc"
+  use_wandb: true
+  log_dir: "./logs/phase1"
+  save_dir: "./checkpoints/phase1"

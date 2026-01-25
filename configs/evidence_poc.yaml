@@ -1,0 +1,58 @@
+# Evidence Generation POC Config
+# 목표: Z 전체 prefix 방식으로 Evidence 생성이 작동하는지 확인
+
+model:
+  llm_name: "Qwen/Qwen3-8B"
+  quantization: "4bit"
+  lora:
+    r: 32
+    alpha: 64
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    dropout: 0.05
+
+memory:
+  num_docs: 2000        # POC는 작게 시작
+  z_dim: 256            # Memory vector 차원
+  m_tokens: 4           # 문서당 memory token 수
+
+data:
+  dataset: "natural_questions"
+  save_dir: "./data/raw"
+  max_samples: 5000     # 학습 샘플 수 제한
+  train_split: 0.9
+  max_query_length: 128
+  max_evidence_length: 256
+
+training:
+  epochs: 5
+  batch_size: 2
+  gradient_accumulation: 8   # effective batch = 16
+  lr_llm: 2e-5               # LLM (LoRA)
+  lr_z: 1e-3                 # Memory pool
+  lr_proj: 1e-4              # z_to_embedding
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  use_amp: true
+  eval_steps: 200
+  log_steps: 50
+
+evaluation:
+  metrics: ["loss", "rouge_l", "answer_coverage"]
+  max_samples: 500
+
+logging:
+  project: "llm-as-memory"
+  run_name: "evidence-poc"
+  save_dir: "./checkpoints/evidence_poc"
+  log_dir: "./logs/evidence_poc"
+
+hardware:
+  device: "cuda"
+  fp16: true
+  gradient_checkpointing: true
+
+# 성공 기준
+success_criteria:
+  eval_loss: 3.0          # loss < 3.0
+  rouge_l: 0.3            # ROUGE-L > 0.3
+  answer_coverage: 0.5    # evidence가 answer 포함 비율 > 50%

@@ -34,6 +34,9 @@ uv.lock
 .claude/
 CLAUDE.md
 
+# Legacy code
+**/legacy/
+
 # IDE
 .idea/
 .vscode/

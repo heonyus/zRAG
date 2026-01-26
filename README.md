@@ -55,7 +55,7 @@ Query → [Local LLM + Internal Memory Z] → Evidence → ChatGPT → Answer
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Phase 3: Read (Z_all Concat)
+### Phase 2: Read (Z_all Concat)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -97,7 +97,7 @@ python training/train_write_phase.py --config configs/phase1_write.yaml
 python training/train_write_phase.py --config configs/phase1_write.yaml --test
 ```
 
-### Phase 3: Read Phase Training
+### Phase 2: Read Phase Training
 
 ```bash
 # After Phase 1 completes, load z_pool and train evidence generation
@@ -110,17 +110,17 @@ python training/train_evidence.py --config configs/evidence_poc.yaml
 zrag/
 ├── models/
 │   ├── write_phase_model.py     # Phase 1: z_i → D_i (NEW)
-│   ├── parametric_memory_llm.py # Phase 3: Z_all concat → evidence
+│   ├── parametric_memory_llm.py # Phase 2: Z_all concat → evidence
 │   └── evidence_trainer.py      # Trainer for evidence generation
 ├── training/
 │   ├── train_write_phase.py     # Phase 1 training (NEW)
-│   └── train_evidence.py        # Phase 3 training
+│   └── train_evidence.py        # Phase 2 training
 ├── data/
 │   ├── dataloader.py            # WritePhaseDataset, ReadPhaseDataset
 │   └── download.py              # Dataset download (NQ, HotpotQA)
 ├── configs/
 │   ├── phase1_write.yaml        # Phase 1 config (NEW)
-│   └── evidence_poc.yaml        # Phase 3 config
+│   └── evidence_poc.yaml        # Phase 2 config
 ├── evaluation/
 │   └── evidence_metrics.py      # ROUGE-L, Answer Coverage
 ├── baselines/
@@ -141,7 +141,7 @@ zrag/
 | `epochs_per_doc` | 100 | Training epochs per document |
 | `LLM` | Qwen3-8B | Frozen (no LoRA) |
 
-### Phase 3 (Read)
+### Phase 2 (Read)
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
@@ -155,19 +155,19 @@ zrag/
 | Phase | GPU Memory | Notes |
 |-------|------------|-------|
 | Phase 1 | ~8GB | Single doc at a time |
-| Phase 3 (N=200) | ~12GB | Z prefix = 800 tokens |
-| Phase 3 (N=500) | ~16GB | Z prefix = 2000 tokens |
-| Phase 3 (N=2000) | ~24GB | Z prefix = 8000 tokens |
+| Phase 2 (N=200) | ~12GB | Z prefix = 800 tokens |
+| Phase 2 (N=500) | ~16GB | Z prefix = 2000 tokens |
+| Phase 2 (N=2000) | ~24GB | Z prefix = 8000 tokens |
 
 **Recommended**: NVIDIA L4 24GB (GCP g2-standard-4)
 
-## Phase 1 → Phase 3 Workflow
+## Phase 1 → Phase 2 Workflow
 
 ```python
 # Phase 1: Train z_i for each document
 # Output: checkpoints/phase1_write/z_pool.pt
 
-# Phase 3: Load trained z_pool
+# Phase 2: Load trained z_pool
 from models import ParametricMemoryLLM
 
 model = ParametricMemoryLLM(num_docs=200, m_tokens=4, z_dim=256, ...)

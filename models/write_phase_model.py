@@ -91,9 +91,10 @@ class WritePhaseModel(nn.Module):
             nn.Linear(z_dim * 2, self.hidden_size),
         ).to(device)
 
-        # α 게이트: 스케일 안정화 (init=1e-2, trainable)
+        # α 게이트: 스케일 안정화
         # z_embed = alpha * projection(z)
-        self.alpha = nn.Parameter(torch.tensor(0.01, device=device))
+        # init=1.0, min=0.5로 clamp하여 스케일 붕괴 방지
+        self.alpha = nn.Parameter(torch.tensor(1.0, device=device))
 
         # ============================
         # 3. Tokenizer
@@ -146,10 +147,19 @@ class WritePhaseModel(nn.Module):
             z_i = z_i.expand(batch_size, -1, -1)
 
         # 1. z_i → LLM embedding space (with α gate for scale stabilization)
-        z_embed = self.alpha * self.z_to_embedding(z_i)  # [batch, m_tokens, hidden_size]
+        # alpha를 min=0.5로 clamp하여 스케일 붕괴 방지
+        alpha_clamped = torch.clamp(self.alpha, min=0.5)
+        z_embed = alpha_clamped * self.z_to_embedding(z_i)  # [batch, m_tokens, hidden_size]
 
         # 2. Document → LLM embeddings (teacher forcing)
         doc_embed = self.llm.get_input_embeddings()(doc_ids)  # [batch, doc_len, hidden]
+
+        # 2.5 Token dropout: z가 필수가 되도록 doc 입력 일부를 0으로
+        # 학습 시에만 적용, dropout_rate=0.9로 doc 토큰 90% 드롭
+        if self.training:
+            dropout_rate = 0.9
+            dropout_mask = torch.rand(doc_embed.shape[0], doc_embed.shape[1], 1, device=doc_embed.device) > dropout_rate
+            doc_embed = doc_embed * dropout_mask.float()
 
         # 3. Concatenate: [z_i | doc[:-1]] → predict doc
         # Teacher forcing: doc[:-1]를 입력으로, doc[1:]을 타겟으로
@@ -179,14 +189,18 @@ class WritePhaseModel(nn.Module):
             output_attentions=False,
         )
 
-        # 5. Loss 계산: doc 토큰 예측
-        # logits at positions [m_tokens-1 : -1] → doc[1:] tokens
+        # 5. Loss 계산: doc 토큰 예측 (A안: z만으로 doc[0]부터 생성)
+        # 입력: [z_prefix (m), doc[0], doc[1], ..., doc[L-2]]  (총 m + L-1)
+        # logits[m-1] → doc[0] 예측 (z_prefix 마지막에서)
+        # logits[m] → doc[1] 예측 (doc[0] 입력에서)
+        # ...
+        # logits[m+L-2] → doc[L-1] 예측 (doc[L-2] 입력에서)
         m = self.m_tokens
         doc_len = doc_ids.size(1)
 
-        # shift_logits: [m_tokens:] 위치의 logits (doc 생성 부분)
-        shift_logits = outputs.logits[:, m-1:m-1+doc_len-1, :]  # [batch, doc_len-1, vocab]
-        shift_labels = doc_ids[:, 1:]  # [batch, doc_len-1]
+        # A안: z만으로 doc[0]부터 생성 → labels는 doc 전체
+        shift_logits = outputs.logits[:, m-1:m-1+doc_len, :]  # [batch, doc_len, vocab]
+        shift_labels = doc_ids  # [batch, doc_len] - doc 전체가 타겟
 
         # Cross entropy loss (padding 무시)
         loss_fct = nn.CrossEntropyLoss(ignore_index=self.tokenizer.pad_token_id)
@@ -231,7 +245,8 @@ class WritePhaseModel(nn.Module):
         # z_i를 float32로 projection 후 bfloat16으로 변환
         # (z_to_embedding이 float32이므로 float32로 입력 후 출력을 bfloat16으로)
         z_i_float = z_i.float()
-        z_embed = self.alpha * self.z_to_embedding(z_i_float)  # [1, m_tokens, hidden] (float32) with α gate
+        alpha_clamped = torch.clamp(self.alpha, min=0.5)
+        z_embed = alpha_clamped * self.z_to_embedding(z_i_float)  # [1, m_tokens, hidden] with α gate (clamped)
         z_embed = z_embed.to(torch.bfloat16)  # LLM 입력용 bfloat16으로 변환
 
         # attention_mask 생성 (inputs_embeds 사용 시 필수)
@@ -275,7 +290,8 @@ class WritePhaseModel(nn.Module):
         with torch.no_grad():
             # autocast로 dtype 자동 맞춤
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                z_embed = self.alpha * self.z_to_embedding(z_i)
+                alpha_clamped = torch.clamp(self.alpha, min=0.5)
+                z_embed = alpha_clamped * self.z_to_embedding(z_i)
 
         return {
             "z_i_norm": z_i.float().norm().item(),

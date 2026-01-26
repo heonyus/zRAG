@@ -231,80 +231,123 @@ def train_shuffled_documents(
 ) -> dict:
     """
     Shuffled doc training: projection drift 방지를 위해 문서들을 섞어서 학습
-
-    기존 문제: doc-by-doc sequential training은 projection이 최근 문서에만 맞춰짐
-    해결책: 모든 z_i를 동시에 학습하되, 각 epoch마다 문서 순서를 섞음
-
-    Args:
-        model: WritePhaseModel
-        tokenized_docs: {doc_id: {"input_ids": tensor, "attention_mask": tensor}}
-        z_vectors: {doc_id: z_i parameter}  (이미 생성된 z_i들)
-        config: training config
-        scaler: GradScaler
-
-    Returns:
-        results: {doc_id: final_loss}
     """
     import random
+    import time
+    import statistics
 
+    # === Config 로드 ===
     lr_z = float(config.get("lr_z", 1e-2))
     lr_proj = float(config.get("lr_proj", 1e-5))
     epochs = config.get("epochs_per_doc", 100)
     log_every = config.get("log_every", 20)
     use_amp = config.get("use_amp", True)
     early_stop_loss = config.get("early_stop_loss", 0.5)
+    collapse_threshold = config.get("collapse_threshold", 0.01)
+    stagnation_patience = config.get("stagnation_patience", 5)
+    checkpoint_every = config.get("checkpoint_every", 10)
 
     doc_ids = list(tokenized_docs.keys())
     num_docs = len(doc_ids)
+    total_iters = num_docs * epochs
 
-    # 모든 z_i를 위한 단일 optimizer
-    # z_i들 + projection + alpha를 함께 학습
-    param_groups = []
+    # === 학습 설정 출력 ===
+    print("\n" + "=" * 70)
+    print("📋 TRAINING CONFIGURATION")
+    print("=" * 70)
+    print(f"  Documents:     {num_docs}")
+    print(f"  Epochs:        {epochs}")
+    print(f"  Total iters:   {total_iters:,}")
+    print(f"  lr_z:          {lr_z}")
+    print(f"  lr_proj:       {lr_proj}")
+    print(f"  use_amp:       {use_amp}")
+    print(f"  log_every:     {log_every} epochs")
+    print(f"  checkpoint:    every {checkpoint_every} epochs")
+    print("=" * 70 + "\n")
 
-    # z_i들 (문서별)
+    # === Optimizer 설정 ===
     z_params = [z_vectors[doc_id] for doc_id in doc_ids]
-    param_groups.append({"params": z_params, "lr": lr_z, "name": "z_vectors"})
+    param_groups = [
+        {"params": z_params, "lr": lr_z, "weight_decay": config.get("weight_decay", 0.01), "name": "z_vectors"},
+        {"params": [model.alpha], "lr": lr_z, "weight_decay": 0.0, "name": "alpha"},
+    ]
 
-    # alpha gate
-    param_groups.append({"params": [model.alpha], "lr": lr_z, "name": "alpha"})
-
-    # projection (if lr_proj > 0)
     if lr_proj > 0:
         param_groups.append({
             "params": model.z_to_embedding.parameters(),
             "lr": lr_proj,
+            "weight_decay": 0.0,
             "name": "z_to_embedding"
         })
-        logger.info(f"[train_shuffled] z lr={lr_z}, alpha lr={lr_z}, proj lr={lr_proj}")
+        print(f"🔧 Optimizer: z_lr={lr_z}, alpha_lr={lr_z}, proj_lr={lr_proj}")
     else:
         for param in model.z_to_embedding.parameters():
             param.requires_grad = False
-        logger.info(f"[train_shuffled] z lr={lr_z}, alpha lr={lr_z}, proj FROZEN")
+        print(f"🔧 Optimizer: z_lr={lr_z}, alpha_lr={lr_z}, proj=FROZEN")
 
-    optimizer = AdamW(param_groups, weight_decay=config.get("weight_decay", 0.01))
+    optimizer = AdamW(param_groups, weight_decay=0.0)
 
-    # 학습 결과 tracking
+    # === 상태 추적 변수 ===
     best_losses = {doc_id: float("inf") for doc_id in doc_ids}
     current_losses = {doc_id: float("inf") for doc_id in doc_ids}
-
-    # 초기 z_i 상태 저장 (변화량 측정용)
     z_init = {doc_id: z_vectors[doc_id].clone().detach() for doc_id in doc_ids}
 
-    logger.info(f"[train_shuffled] Starting training: {num_docs} docs, {epochs} epochs")
-    logger.info(f"[train_shuffled] Initial alpha: {model.alpha.item():.4f}")
+    loss_history = []
+    best_avg_loss = float("inf")
+    stagnation_counter = 0
+    collapse_warned = False
+
+    # === 초기 z 통계 ===
+    init_z_norms = [z_vectors[d].norm().item() for d in doc_ids]
+    init_z_stds = [z_vectors[d].std().item() for d in doc_ids]
+    print(f"\n📊 Initial z stats:")
+    print(f"   z_norm: mean={statistics.mean(init_z_norms):.4f}, std={statistics.stdev(init_z_norms) if len(init_z_norms) > 1 else 0:.4f}")
+    print(f"   z_std:  mean={statistics.mean(init_z_stds):.4f}")
+    print(f"   alpha:  {model.alpha.item():.4f}")
+
+    # === 타이밍 ===
+    start_time = time.time()
+    epoch_times = []
+
+    # === 메인 학습 루프 ===
+    print("\n" + "=" * 70)
+    print("🚀 TRAINING START")
+    print("=" * 70)
+
+    # 전체 진행률 바
+    total_pbar = tqdm(
+        total=total_iters,
+        desc="Total",
+        position=0,
+        leave=True,
+        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
+    )
+
+    global_iter = 0
 
     for epoch in range(epochs):
-        # 매 epoch마다 문서 순서 섞기 (핵심!)
+        epoch_start = time.time()
         random.shuffle(doc_ids)
 
-        epoch_loss = 0.0
+        epoch_losses = []
+        epoch_grad_norms = []
 
-        for doc_id in doc_ids:
+        # Epoch 진행률 바
+        epoch_pbar = tqdm(
+            doc_ids,
+            desc=f"Ep {epoch:03d}",
+            position=1,
+            leave=False,
+            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}'
+        )
+
+        for doc_idx, doc_id in enumerate(epoch_pbar):
             optimizer.zero_grad()
 
             doc_data = tokenized_docs[doc_id]
             z_i = z_vectors[doc_id]
 
+            # Forward + Backward
             if use_amp and scaler is not None:
                 with autocast('cuda', dtype=torch.bfloat16):
                     outputs = model(z_i, doc_data["input_ids"], doc_data["attention_mask"])
@@ -312,7 +355,7 @@ def train_shuffled_documents(
 
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(z_params + list(model.z_to_embedding.parameters()), 1.0)
+                grad_norm = nn.utils.clip_grad_norm_(z_params + list(model.z_to_embedding.parameters()), 1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -320,49 +363,167 @@ def train_shuffled_documents(
                 loss = outputs["loss"]
 
                 loss.backward()
-                nn.utils.clip_grad_norm_(z_params + list(model.z_to_embedding.parameters()), 1.0)
+                grad_norm = nn.utils.clip_grad_norm_(z_params + list(model.z_to_embedding.parameters()), 1.0)
                 optimizer.step()
 
+            # 통계 수집
             loss_val = loss.item()
+            grad_norm_val = grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm
+            epoch_losses.append(loss_val)
+            epoch_grad_norms.append(grad_norm_val)
             current_losses[doc_id] = loss_val
-            epoch_loss += loss_val
 
             if loss_val < best_losses[doc_id]:
                 best_losses[doc_id] = loss_val
 
-        avg_epoch_loss = epoch_loss / num_docs
+            # Epoch 진행률 바 업데이트
+            running_avg = sum(epoch_losses) / len(epoch_losses)
+            epoch_pbar.set_postfix({
+                'loss': f'{loss_val:.3f}',
+                'avg': f'{running_avg:.3f}',
+                'α': f'{model.alpha.item():.2f}'
+            })
 
-        # Logging
-        if epoch % log_every == 0 or epoch == epochs - 1:
-            # z_i 변화량 통계
-            z_changes = [(z_vectors[d] - z_init[d]).norm().item() for d in doc_ids[:5]]
-            avg_z_change = sum(z_changes) / len(z_changes)
+            # 전체 진행률 바 업데이트
+            global_iter += 1
+            total_pbar.update(1)
+            total_pbar.set_postfix({
+                'ep': f'{epoch}/{epochs}',
+                'loss': f'{running_avg:.3f}',
+                'α': f'{model.alpha.item():.2f}'
+            })
 
-            # alpha 값 추적
-            alpha_val = model.alpha.item()
+        epoch_pbar.close()
 
-            logger.info(f"[Epoch {epoch}/{epochs}] avg_loss={avg_epoch_loss:.4f}, "
-                       f"alpha={alpha_val:.4f}, avg_z_change={avg_z_change:.4f}")
+        # === Epoch 통계 계산 ===
+        epoch_time = time.time() - epoch_start
+        epoch_times.append(epoch_time)
 
-            # 첫 문서 샘플 생성 테스트
-            if epoch in {0, 1, 5, 10, 20, 50, epochs-1}:
-                test_doc_id = list(tokenized_docs.keys())[0]
-                try:
+        avg_loss = statistics.mean(epoch_losses)
+        loss_std = statistics.stdev(epoch_losses) if len(epoch_losses) > 1 else 0
+        loss_min = min(epoch_losses)
+        loss_max = max(epoch_losses)
+
+        avg_grad = statistics.mean(epoch_grad_norms)
+
+        # z 통계
+        z_norms = [z_vectors[d].norm().item() for d in doc_ids]
+        z_stds = [z_vectors[d].std().item() for d in doc_ids]
+        z_changes = [(z_vectors[d] - z_init[d]).norm().item() for d in doc_ids]
+
+        avg_z_norm = statistics.mean(z_norms)
+        avg_z_std = statistics.mean(z_stds)
+        avg_z_change = statistics.mean(z_changes)
+
+        loss_history.append(avg_loss)
+
+        # === Epoch 로그 출력 ===
+        if epoch % log_every == 0 or epoch == epochs - 1 or epoch < 3:
+            elapsed = time.time() - start_time
+            if epoch > 0:
+                eta = (elapsed / (epoch + 1)) * (epochs - epoch - 1)
+                eta_str = f"{int(eta // 60):02d}:{int(eta % 60):02d}"
+            else:
+                eta_str = "--:--"
+            elapsed_str = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
+
+            print(f"\n{'─' * 70}")
+            print(f"📈 EPOCH {epoch:03d}/{epochs} | elapsed={elapsed_str} | ETA={eta_str} | {epoch_time:.1f}s/ep")
+            print(f"{'─' * 70}")
+            print(f"  Loss:  avg={avg_loss:.4f} | std={loss_std:.4f} | min={loss_min:.4f} | max={loss_max:.4f}")
+            print(f"  Grad:  avg_norm={avg_grad:.4f}")
+            print(f"  Alpha: {model.alpha.item():.4f}")
+            print(f"  z:     norm={avg_z_norm:.4f} | std={avg_z_std:.4f} | Δ={avg_z_change:.4f}")
+
+            # 개선 상태
+            if epoch > 0:
+                improvement = loss_history[-2] - avg_loss
+                arrow = "↓" if improvement > 0 else "↑" if improvement < 0 else "→"
+                print(f"  Δloss: {arrow} {abs(improvement):.4f} (prev={loss_history[-2]:.4f})")
+
+        # === 안전장치 체크 ===
+        # 1. Collapse 감지
+        if avg_z_std < collapse_threshold and not collapse_warned:
+            print(f"\n⚠️  [COLLAPSE WARNING] z_std={avg_z_std:.6f} < {collapse_threshold}")
+            print(f"    z vectors가 너무 비슷해지고 있음!")
+            collapse_warned = True
+
+        # 2. Stagnation 감지
+        if avg_loss < best_avg_loss - 0.001:
+            best_avg_loss = avg_loss
+            stagnation_counter = 0
+        else:
+            stagnation_counter += 1
+            if stagnation_counter >= stagnation_patience and stagnation_counter % stagnation_patience == 0:
+                print(f"\n⚠️  [STAGNATION] {stagnation_counter} epochs without improvement")
+                print(f"    best={best_avg_loss:.4f}, current={avg_loss:.4f}")
+
+        # 3. 샘플 생성 (특정 epoch에서)
+        if epoch in {0, 1, 5, 10, epochs // 2, epochs - 1}:
+            test_doc_id = doc_ids[0]
+            try:
+                with torch.no_grad():
                     sample = model.generate_from_z(
                         z_vectors[test_doc_id].detach(),
-                        max_new_tokens=50,
+                        max_new_tokens=40,
                         do_sample=True
                     )
-                    logger.info(f"  [{test_doc_id}] Epoch {epoch} sample: {sample[:100]}...")
-                except Exception as e:
-                    logger.warning(f"  [{test_doc_id}] Epoch {epoch} generate failed: {e}")
+                print(f"  Sample: \"{sample[:80]}...\"")
+            except Exception as e:
+                print(f"  Sample: [failed: {e}]")
 
-        # Early stopping 체크 (평균 loss 기준)
-        if avg_epoch_loss < early_stop_loss:
-            logger.info(f"[train_shuffled] Early stop at epoch {epoch}, avg_loss={avg_epoch_loss:.4f}")
+        # 4. 체크포인트 저장
+        if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
+            checkpoint_dir = Path(config.get("save_dir", "./checkpoints/phase1_write"))
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+            checkpoint_path = checkpoint_dir / f"z_pool_epoch{epoch+1}.pt"
+            checkpoint_data = {
+                "epoch": epoch + 1,
+                "z_vectors": {doc_id: z_vectors[doc_id].detach().cpu() for doc_id in doc_ids},
+                "avg_loss": avg_loss,
+                "alpha": model.alpha.item(),
+                "loss_history": loss_history,
+            }
+            torch.save(checkpoint_data, checkpoint_path)
+            print(f"  💾 Checkpoint: {checkpoint_path}")
+
+        # 5. Early stopping
+        if avg_loss < early_stop_loss:
+            print(f"\n✅ Early stopping at epoch {epoch}, loss={avg_loss:.4f} < {early_stop_loss}")
             break
 
-    logger.info(f"[train_shuffled] Final alpha: {model.alpha.item():.4f}")
+    total_pbar.close()
+
+    # === 최종 요약 ===
+    total_time = time.time() - start_time
+    final_avg_loss = statistics.mean(list(best_losses.values()))
+
+    print("\n" + "=" * 70)
+    print("🏁 TRAINING COMPLETED")
+    print("=" * 70)
+    print(f"  Total time:    {int(total_time // 60)}m {int(total_time % 60)}s")
+    print(f"  Epochs:        {len(loss_history)}/{epochs}")
+    print(f"  Final loss:    {loss_history[-1]:.4f}")
+    print(f"  Best avg loss: {final_avg_loss:.4f}")
+    print(f"  Final alpha:   {model.alpha.item():.4f}")
+
+    # z 최종 통계
+    final_z_norms = [z_vectors[d].norm().item() for d in doc_ids]
+    final_z_stds = [z_vectors[d].std().item() for d in doc_ids]
+    final_z_changes = [(z_vectors[d] - z_init[d]).norm().item() for d in doc_ids]
+
+    print(f"\n  z final stats:")
+    print(f"    norm:   {statistics.mean(final_z_norms):.4f} (init: {statistics.mean(init_z_norms):.4f})")
+    print(f"    std:    {statistics.mean(final_z_stds):.4f} (init: {statistics.mean(init_z_stds):.4f})")
+    print(f"    change: {statistics.mean(final_z_changes):.4f}")
+
+    # Loss 변화
+    if len(loss_history) > 1:
+        print(f"\n  Loss trajectory: {loss_history[0]:.3f} → {loss_history[-1]:.3f}")
+        print(f"    Reduction: {loss_history[0] - loss_history[-1]:.3f} ({(1 - loss_history[-1]/loss_history[0])*100:.1f}%)")
+
+    print("=" * 70 + "\n")
 
     return best_losses
 
@@ -490,16 +651,20 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
 
     # 모든 문서에 대해 z_i 생성
     z_vectors = {}
-    for doc_id in doc_ids_list:
+    for doc_id in tqdm(doc_ids_list, desc="Creating z_i vectors"):
         z_vectors[doc_id] = model.create_z_for_doc()
     logger.info(f"Created {len(z_vectors)} z_i vectors")
+
+    # train_config에 save_dir 추가 (체크포인트용)
+    train_config_dict = dict(train_config)
+    train_config_dict["save_dir"] = str(save_dir)
 
     # Shuffled training 실행
     losses = train_shuffled_documents(
         model=model,
         tokenized_docs=tokenized_docs,
         z_vectors=z_vectors,
-        config=train_config,
+        config=train_config_dict,
         scaler=scaler,
     )
 
@@ -511,7 +676,7 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     }
 
     # z_pool에 추가
-    for doc_id in doc_ids_list:
+    for doc_id in tqdm(doc_ids_list, desc="Saving to z_pool"):
         z_pool_manager.add_z(doc_id, z_vectors[doc_id].detach())
 
     # ==========================================
@@ -534,6 +699,34 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     logger.info(f"\nFinal Average Loss: {results['avg_loss']:.4f}")
     logger.info(f"Saved z_pool to: {z_pool_path}")
     logger.info(f"Saved projection to: {proj_path}")
+
+    # ==========================================
+    # 5.1 Corpus Manifest 저장 (데이터 동일성 검증용)
+    # ==========================================
+    import hashlib
+    import json
+
+    corpus_manifest = {
+        "created_at": str(torch.cuda.current_device()) if torch.cuda.is_available() else "cpu",
+        "num_docs": len(doc_ids_list),
+        "documents": {}
+    }
+
+    for doc_id in tqdm(doc_ids_list, desc="Creating manifest"):
+        text = corpus[doc_id]
+        text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
+        first_16_tokens = tokenized_docs[doc_id]["input_ids"][0, :16].tolist()
+
+        corpus_manifest["documents"][doc_id] = {
+            "text_sha256": text_hash,
+            "text_len_chars": len(text),
+            "first_16_tokens": first_16_tokens,
+        }
+
+    manifest_path = save_dir / "corpus_manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(corpus_manifest, f, indent=2)
+    logger.info(f"Saved corpus manifest to: {manifest_path}")
 
     # ==========================================
     # 6. Validation: Generate from z + Keyword Check
@@ -577,7 +770,8 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     num_samples = min(3, len(doc_ids_list))
     total_keyword_score = 0.0
 
-    for i in range(num_samples):
+    logger.info(f"Generating {num_samples} validation samples...")
+    for i in tqdm(range(num_samples), desc="Validation samples"):
         doc_id = doc_ids_list[i]
         z_i = z_pool_manager.get_z(doc_id).to(model.device)
 

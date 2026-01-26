@@ -23,17 +23,26 @@ memory:
 data:
   dataset: "hotpot_qa"
   save_dir: "./data/raw"
-  num_docs: 200         # Phase 1은 200개로 시작 (L4 24GB 기준 충분)
+  num_docs: 200         # 스케일업: 200개
   max_doc_length: 512   # 문서 최대 토큰 수
 
 training:
-  epochs_per_doc: 100   # 문서당 z_i 학습 epoch
+  # === 단계별 스케일업 ===
+  # Stage 1: epochs_per_doc: 10  (빠른 검증, ~30분)
+  # Stage 2: epochs_per_doc: 30  (중간 검증, ~1.5시간)
+  # Stage 3: epochs_per_doc: 100 (최종 학습, ~5시간)
+  epochs_per_doc: 10    # Stage 1: 먼저 10 epoch으로 안정성 확인
   lr_z: 1e-2            # z_i learning rate (높게)
   lr_proj: 1e-5         # projection 학습 (매우 낮은 lr로 drift 방지)
   weight_decay: 0.01
   use_amp: true         # Mixed precision
   early_stop_loss: 0.5  # 이 loss 이하면 early stop
-  log_every: 20         # 로깅 주기
+  log_every: 5          # 스케일업: 더 자주 로깅
+
+  # 안전장치
+  collapse_threshold: 0.01    # z_std가 이 이하면 collapse 경고
+  stagnation_patience: 5      # N epoch 동안 개선 없으면 경고
+  checkpoint_every: 10        # N epoch마다 중간 저장
 
 logging:
   project: "zrag-phase1"

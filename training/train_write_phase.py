@@ -20,7 +20,7 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 import yaml
 from omegaconf import OmegaConf
 
@@ -38,16 +38,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def prepare_corpus_from_nq(dataset, max_docs: int = 200) -> dict:
+def prepare_corpus(dataset, max_docs: int = 200, dataset_name: str = "hotpot_qa") -> dict:
     """
-    Natural Questions에서 corpus 추출
+    데이터셋에서 corpus 추출
+
+    Args:
+        dataset: HuggingFace dataset
+        max_docs: 최대 문서 수
+        dataset_name: 데이터셋 이름 (hotpot_qa, natural_questions 등)
 
     Returns:
         corpus: {doc_id: doc_text} dict
     """
     corpus = {}
 
-    # FlashRAG 버전 처리
+    # train split 처리
     if hasattr(dataset, "keys") and "train" in dataset.keys():
         data = dataset["train"]
     else:
@@ -57,17 +62,31 @@ def prepare_corpus_from_nq(dataset, max_docs: int = 200) -> dict:
         if len(corpus) >= max_docs:
             break
 
-        # FlashRAG NQ format: golden_answers, question, (retrieval_result)
-        # retrieval_result가 있으면 그것이 문서
-        if "retrieval_result" in item and item["retrieval_result"]:
+        # HotpotQA format: context = {'title': [...], 'sentences': [[...], ...]}
+        if dataset_name == "hotpot_qa" and "context" in item:
+            ctx = item["context"]
+            titles = ctx.get("title", [])
+            sentences_list = ctx.get("sentences", [])
+
+            # 각 문서(title + sentences)를 별도 문서로 추출
+            for title, sentences in zip(titles, sentences_list):
+                if len(corpus) >= max_docs:
+                    break
+                doc_text = f"{title}\n" + " ".join(sentences)
+                if len(doc_text) > 50:  # 너무 짧은 문서 제외
+                    doc_id = f"doc_{len(corpus)}"
+                    corpus[doc_id] = doc_text
+
+        # FlashRAG NQ format: retrieval_result가 있으면 그것이 문서
+        elif "retrieval_result" in item and item["retrieval_result"]:
             for j, doc in enumerate(item["retrieval_result"][:1]):  # 첫 번째 문서만
                 doc_id = f"doc_{len(corpus)}"
                 doc_text = doc.get("contents", doc.get("text", ""))
-                if doc_text and len(doc_text) > 50:  # 너무 짧은 문서 제외
+                if doc_text and len(doc_text) > 50:
                     corpus[doc_id] = doc_text
 
-        # 또는 context가 있는 경우
-        elif "context" in item and item["context"]:
+        # 일반 context (문자열)
+        elif "context" in item and isinstance(item["context"], str):
             doc_id = f"doc_{len(corpus)}"
             doc_text = item["context"]
             if len(doc_text) > 50:
@@ -84,6 +103,7 @@ def train_single_document(
     doc_attention_mask: torch.Tensor,
     config: dict,
     scaler: GradScaler = None,
+    enable_diagnostics: bool = True,
 ) -> tuple:
     """
     단일 문서에 대해 z_i를 학습
@@ -95,6 +115,7 @@ def train_single_document(
         doc_attention_mask: [1, doc_len]
         config: 학습 설정
         scaler: GradScaler for mixed precision
+        enable_diagnostics: 중간 샘플 생성 및 통계 출력 여부
 
     Returns:
         z_i: 학습된 z_i tensor
@@ -102,10 +123,15 @@ def train_single_document(
     """
     # 새 z_i 생성
     z_i = model.create_z_for_doc()
+    z_i_init = z_i.clone().detach()  # 초기값 저장 (변화량 측정용)
 
-    # Optimizer (z_i + projection)
+    # Learning rates from config
+    lr_z = float(config.get("lr_z", 1e-2))
+    lr_proj = float(config.get("lr_proj", 0))
+
+    # Optimizer (z_i + projection if lr_proj > 0)
     optimizer = AdamW(
-        model.get_trainable_params(z_i),
+        model.get_trainable_params(z_i, lr_z=lr_z, lr_proj=lr_proj),
         weight_decay=config.get("weight_decay", 0.01),
     )
 
@@ -118,17 +144,30 @@ def train_single_document(
     best_loss = float("inf")
     best_z = z_i.clone().detach()
 
+    # 진단용: 중간 샘플 생성할 epoch들
+    diagnostic_epochs = {0, 1, 5, 10, 20, 50, epochs - 1} if enable_diagnostics else set()
+
+    # 첫 문서의 첫 epoch에서 초기 상태 로깅
+    if doc_id == "doc_0" and enable_diagnostics:
+        stats = model.get_z_embed_stats(z_i)
+        logger.info(f"  [{doc_id}] INIT: z_norm={stats['z_i_norm']:.4f}, "
+                   f"z_embed_norm={stats['z_embed_norm']:.4f}, z_embed_std={stats['z_embed_std']:.4f}")
+
     for epoch in range(epochs):
         optimizer.zero_grad()
 
         if use_amp and scaler is not None:
-            with autocast(dtype=torch.bfloat16):
+            with autocast('cuda', dtype=torch.bfloat16):
                 outputs = model(z_i, doc_ids, doc_attention_mask)
                 loss = outputs["loss"]
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_([z_i] + list(model.z_to_embedding.parameters()), 1.0)
+
+            # Gradient norm 계산 (z_i만)
+            z_grad_norm = z_i.grad.norm().item() if z_i.grad is not None else 0.0
+
+            nn.utils.clip_grad_norm_([z_i], 1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
@@ -136,7 +175,8 @@ def train_single_document(
             loss = outputs["loss"]
 
             loss.backward()
-            nn.utils.clip_grad_norm_([z_i] + list(model.z_to_embedding.parameters()), 1.0)
+            z_grad_norm = z_i.grad.norm().item() if z_i.grad is not None else 0.0
+            nn.utils.clip_grad_norm_([z_i], 1.0)
             optimizer.step()
 
         loss_val = loss.item()
@@ -148,12 +188,36 @@ def train_single_document(
 
         # Early stopping
         if loss_val < early_stop_loss:
-            logger.debug(f"  [Doc {doc_id}] Early stop at epoch {epoch}, loss={loss_val:.4f}")
+            logger.info(f"  [{doc_id}] Early stop at epoch {epoch}, loss={loss_val:.4f}")
             break
 
-        # Logging
+        # Logging (every log_every epochs)
         if epoch % log_every == 0 or epoch == epochs - 1:
-            logger.debug(f"  [Doc {doc_id}] Epoch {epoch}/{epochs}, loss={loss_val:.4f}")
+            z_change = (z_i - z_i_init).norm().item()
+            logger.debug(f"  [{doc_id}] Epoch {epoch}/{epochs}: loss={loss_val:.4f}, "
+                        f"z_grad={z_grad_norm:.4f}, z_change={z_change:.4f}")
+
+        # 진단: 중간 샘플 생성 및 통계
+        if epoch in diagnostic_epochs and enable_diagnostics:
+            # z_embed 통계 출력
+            stats = model.get_z_embed_stats(z_i)
+            z_change = (z_i - z_i_init).norm().item()
+            logger.info(f"  [{doc_id}] Epoch {epoch}: loss={loss_val:.4f} | "
+                       f"z_norm={stats['z_i_norm']:.4f}, z_change={z_change:.4f}, "
+                       f"z_grad={z_grad_norm:.4f} | "
+                       f"z_embed_norm={stats['z_embed_norm']:.4f}, z_embed_std={stats['z_embed_std']:.4f}")
+
+            # 첫 문서만 중간 생성 테스트 (시간 절약)
+            if doc_id == "doc_0":
+                try:
+                    sample = model.generate_from_z(z_i.detach(), max_new_tokens=50, do_sample=True)
+                    logger.info(f"  [{doc_id}] Epoch {epoch} sample: {sample[:100]}...")
+                except Exception as e:
+                    logger.warning(f"  [{doc_id}] Epoch {epoch} generate failed: {e}")
+
+    # 최종 상태 로깅
+    final_z_change = (best_z - z_i_init).norm().item()
+    logger.debug(f"  [{doc_id}] FINAL: best_loss={best_loss:.4f}, total_z_change={final_z_change:.4f}")
 
     return best_z, best_loss
 
@@ -202,9 +266,10 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     )
 
     # Corpus 추출
-    corpus = prepare_corpus_from_nq(
+    corpus = prepare_corpus(
         raw_data,
         max_docs=data_config.num_docs,
+        dataset_name=data_config.dataset,
     )
     logger.info(f"Corpus size: {len(corpus)} documents")
 
@@ -263,7 +328,14 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
 
     train_config = config.training
     use_amp = train_config.get("use_amp", True)
-    scaler = GradScaler() if use_amp else None
+    scaler = GradScaler('cuda') if use_amp else None
+
+    # Training config 로깅
+    lr_z = float(train_config.get("lr_z", 1e-2))
+    lr_proj = float(train_config.get("lr_proj", 0))
+    epochs_per_doc = train_config.get("epochs_per_doc", 100)
+    logger.info(f"Training config: lr_z={lr_z}, lr_proj={lr_proj}, epochs_per_doc={epochs_per_doc}")
+    logger.info(f"Projection: {'FROZEN' if lr_proj == 0 else f'learning (lr={lr_proj})'}")
 
     results = {
         "losses": {},
@@ -328,18 +400,39 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     # ==========================================
     logger.info("\n[Step 6] Validation: Generate from learned z")
 
+    # Projection 상태 확인
+    proj_frozen = not any(p.requires_grad for p in model.z_to_embedding.parameters())
+    logger.info(f"Projection layer: {'FROZEN' if proj_frozen else 'TRAINABLE'}")
+
+    # z_pool 통계
+    z_pool_tensor = z_pool_manager.get_pool_tensor()
+    logger.info(f"z_pool shape: {z_pool_tensor.shape}")
+    logger.info(f"z_pool stats: mean={z_pool_tensor.mean():.4f}, std={z_pool_tensor.std():.4f}, "
+               f"min={z_pool_tensor.min():.4f}, max={z_pool_tensor.max():.4f}")
+
     # 몇 개 샘플 생성
     num_samples = min(3, len(doc_ids_list))
     for i in range(num_samples):
         doc_id = doc_ids_list[i]
         z_i = z_pool_manager.get_z(doc_id).to(model.device)
 
-        generated = model.generate_from_z(z_i, max_new_tokens=128)
+        # z_i 통계
+        logger.info(f"\n--- Sample {i+1}: {doc_id} ---")
+        logger.info(f"z_i shape: {z_i.shape}, dtype: {z_i.dtype}")
+        logger.info(f"z_i stats: mean={z_i.mean():.4f}, std={z_i.std():.4f}, norm={z_i.norm():.4f}")
+
+        # 샘플링과 greedy 둘 다 테스트
+        generated_sample = model.generate_from_z(z_i, max_new_tokens=128, do_sample=True)
+        generated_greedy = model.generate_from_z(z_i, max_new_tokens=128, do_sample=False)
         original = corpus[doc_id][:200]
 
-        logger.info(f"\n--- Sample {i+1}: {doc_id} ---")
+        # z_embed 통계
+        stats = model.get_z_embed_stats(z_i)
+
+        logger.info(f"z_embed stats: norm={stats['z_embed_norm']:.4f}, mean={stats['z_embed_mean']:.4f}, std={stats['z_embed_std']:.4f}")
         logger.info(f"Original (first 200 chars): {original}...")
-        logger.info(f"Generated: {generated[:200]}...")
+        logger.info(f"Generated (sampling): {generated_sample[:200]}...")
+        logger.info(f"Generated (greedy):   {generated_greedy[:200]}...")
 
     logger.info("\n" + "=" * 60)
     logger.info("Phase 1 Training Complete!")

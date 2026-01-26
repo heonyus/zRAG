@@ -201,6 +201,9 @@ class WritePhaseModel(nn.Module):
         self,
         z_i: torch.Tensor,
         max_new_tokens: int = 256,
+        do_sample: bool = True,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
         **generate_kwargs,
     ) -> str:
         """
@@ -209,6 +212,9 @@ class WritePhaseModel(nn.Module):
         Args:
             z_i: [m_tokens, z_dim] - 학습된 토큰
             max_new_tokens: 최대 생성 토큰 수
+            do_sample: 샘플링 여부 (True 권장, greedy는 붕괴 위험)
+            temperature: 샘플링 temperature
+            top_p: nucleus sampling threshold
 
         Returns:
             generated_text: 생성된 문서 텍스트
@@ -218,37 +224,95 @@ class WritePhaseModel(nn.Module):
         if z_i.dim() == 2:
             z_i = z_i.unsqueeze(0)  # [1, m_tokens, z_dim]
 
-        # z_i → embedding
-        z_embed = self.z_to_embedding(z_i)  # [1, m_tokens, hidden]
+        # z_i를 float32로 projection 후 bfloat16으로 변환
+        # (z_to_embedding이 float32이므로 float32로 입력 후 출력을 bfloat16으로)
+        z_i_float = z_i.float()
+        z_embed = self.z_to_embedding(z_i_float)  # [1, m_tokens, hidden] (float32)
+        z_embed = z_embed.to(torch.bfloat16)  # LLM 입력용 bfloat16으로 변환
+
+        # attention_mask 생성 (inputs_embeds 사용 시 필수)
+        batch_size, seq_len, _ = z_embed.shape
+        attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long, device=z_embed.device)
 
         # Generate
-        outputs = self.llm.generate(
+        gen_kwargs = dict(
             inputs_embeds=z_embed,
+            attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **generate_kwargs,
         )
+
+        if do_sample:
+            gen_kwargs.update(
+                do_sample=True,
+                temperature=temperature,
+                top_p=top_p,
+            )
+        else:
+            gen_kwargs["do_sample"] = False
+
+        gen_kwargs.update(generate_kwargs)
+        outputs = self.llm.generate(**gen_kwargs)
 
         # Decode
         generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         return generated_text
 
-    def get_trainable_params(self, z_i: nn.Parameter) -> list:
+    def get_z_embed_stats(self, z_i: torch.Tensor) -> dict:
+        """
+        z_i → embedding의 통계 확인 (디버깅용)
+
+        스케일 붕괴 여부 진단에 사용
+        """
+        if z_i.dim() == 2:
+            z_i = z_i.unsqueeze(0)
+
+        with torch.no_grad():
+            # autocast로 dtype 자동 맞춤
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                z_embed = self.z_to_embedding(z_i)
+
+        return {
+            "z_i_norm": z_i.float().norm().item(),
+            "z_i_mean": z_i.float().mean().item(),
+            "z_i_std": z_i.float().std().item(),
+            "z_embed_norm": z_embed.float().norm().item(),
+            "z_embed_mean": z_embed.float().mean().item(),
+            "z_embed_std": z_embed.float().std().item(),
+        }
+
+    def get_trainable_params(self, z_i: nn.Parameter, lr_z: float = 1e-2, lr_proj: float = 0) -> list:
         """
         학습 대상 파라미터 반환
 
         Phase 1에서는:
         - z_i (문서별 learned tokens)
-        - z_to_embedding (projection layer)
+        - z_to_embedding (projection layer) - lr_proj > 0일 때만
 
         LLM은 freeze
+
+        Args:
+            z_i: 학습할 z_i 파라미터
+            lr_z: z_i learning rate
+            lr_proj: projection learning rate (0이면 freeze)
         """
-        return [
-            {"params": [z_i], "lr": 1e-2, "name": "z_i"},  # z는 lr 높게
-            {"params": self.z_to_embedding.parameters(), "lr": 1e-4, "name": "z_to_embedding"},
-        ]
+        params = [{"params": [z_i], "lr": lr_z, "name": "z_i"}]
+
+        if lr_proj > 0:
+            params.append({
+                "params": self.z_to_embedding.parameters(),
+                "lr": lr_proj,
+                "name": "z_to_embedding"
+            })
+            logger.info(f"[get_trainable_params] z_i lr={lr_z}, projection lr={lr_proj}")
+        else:
+            # Projection freeze
+            for param in self.z_to_embedding.parameters():
+                param.requires_grad = False
+            logger.info(f"[get_trainable_params] z_i lr={lr_z}, projection FROZEN")
+
+        return params
 
     def save_projection(self, path: str):
         """Projection layer 저장 (z_to_embedding)"""

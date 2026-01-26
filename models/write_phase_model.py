@@ -84,12 +84,16 @@ class WritePhaseModel(nn.Module):
         # ============================
         # 2. z → LLM Embedding Projection (학습 대상)
         # ============================
+        # LayerNorm 제거 - std를 1로 강제하면 스케일 문제 발생
         self.z_to_embedding = nn.Sequential(
             nn.Linear(z_dim, z_dim * 2),
             nn.GELU(),
             nn.Linear(z_dim * 2, self.hidden_size),
-            nn.LayerNorm(self.hidden_size),
         ).to(device)
+
+        # α 게이트: 스케일 안정화 (init=1e-2, trainable)
+        # z_embed = alpha * projection(z)
+        self.alpha = nn.Parameter(torch.tensor(0.01, device=device))
 
         # ============================
         # 3. Tokenizer
@@ -141,8 +145,8 @@ class WritePhaseModel(nn.Module):
         if z_i.size(0) == 1 and batch_size > 1:
             z_i = z_i.expand(batch_size, -1, -1)
 
-        # 1. z_i → LLM embedding space
-        z_embed = self.z_to_embedding(z_i)  # [batch, m_tokens, hidden_size]
+        # 1. z_i → LLM embedding space (with α gate for scale stabilization)
+        z_embed = self.alpha * self.z_to_embedding(z_i)  # [batch, m_tokens, hidden_size]
 
         # 2. Document → LLM embeddings (teacher forcing)
         doc_embed = self.llm.get_input_embeddings()(doc_ids)  # [batch, doc_len, hidden]
@@ -227,7 +231,7 @@ class WritePhaseModel(nn.Module):
         # z_i를 float32로 projection 후 bfloat16으로 변환
         # (z_to_embedding이 float32이므로 float32로 입력 후 출력을 bfloat16으로)
         z_i_float = z_i.float()
-        z_embed = self.z_to_embedding(z_i_float)  # [1, m_tokens, hidden] (float32)
+        z_embed = self.alpha * self.z_to_embedding(z_i_float)  # [1, m_tokens, hidden] (float32) with α gate
         z_embed = z_embed.to(torch.bfloat16)  # LLM 입력용 bfloat16으로 변환
 
         # attention_mask 생성 (inputs_embeds 사용 시 필수)
@@ -271,7 +275,7 @@ class WritePhaseModel(nn.Module):
         with torch.no_grad():
             # autocast로 dtype 자동 맞춤
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                z_embed = self.z_to_embedding(z_i)
+                z_embed = self.alpha * self.z_to_embedding(z_i)
 
         return {
             "z_i_norm": z_i.float().norm().item(),
@@ -299,18 +303,25 @@ class WritePhaseModel(nn.Module):
         """
         params = [{"params": [z_i], "lr": lr_z, "name": "z_i"}]
 
+        # α gate는 항상 학습 (스케일 조절용)
+        params.append({
+            "params": [self.alpha],
+            "lr": lr_z,  # z_i와 같은 lr 사용
+            "name": "alpha"
+        })
+
         if lr_proj > 0:
             params.append({
                 "params": self.z_to_embedding.parameters(),
                 "lr": lr_proj,
                 "name": "z_to_embedding"
             })
-            logger.info(f"[get_trainable_params] z_i lr={lr_z}, projection lr={lr_proj}")
+            logger.info(f"[get_trainable_params] z_i lr={lr_z}, alpha lr={lr_z}, projection lr={lr_proj}")
         else:
             # Projection freeze
             for param in self.z_to_embedding.parameters():
                 param.requires_grad = False
-            logger.info(f"[get_trainable_params] z_i lr={lr_z}, projection FROZEN")
+            logger.info(f"[get_trainable_params] z_i lr={lr_z}, alpha lr={lr_z}, projection FROZEN")
 
         return params
 

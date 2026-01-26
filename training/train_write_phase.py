@@ -222,6 +222,151 @@ def train_single_document(
     return best_z, best_loss
 
 
+def train_shuffled_documents(
+    model: WritePhaseModel,
+    tokenized_docs: dict,
+    z_vectors: dict,
+    config: dict,
+    scaler: GradScaler = None,
+) -> dict:
+    """
+    Shuffled doc training: projection drift 방지를 위해 문서들을 섞어서 학습
+
+    기존 문제: doc-by-doc sequential training은 projection이 최근 문서에만 맞춰짐
+    해결책: 모든 z_i를 동시에 학습하되, 각 epoch마다 문서 순서를 섞음
+
+    Args:
+        model: WritePhaseModel
+        tokenized_docs: {doc_id: {"input_ids": tensor, "attention_mask": tensor}}
+        z_vectors: {doc_id: z_i parameter}  (이미 생성된 z_i들)
+        config: training config
+        scaler: GradScaler
+
+    Returns:
+        results: {doc_id: final_loss}
+    """
+    import random
+
+    lr_z = float(config.get("lr_z", 1e-2))
+    lr_proj = float(config.get("lr_proj", 1e-5))
+    epochs = config.get("epochs_per_doc", 100)
+    log_every = config.get("log_every", 20)
+    use_amp = config.get("use_amp", True)
+    early_stop_loss = config.get("early_stop_loss", 0.5)
+
+    doc_ids = list(tokenized_docs.keys())
+    num_docs = len(doc_ids)
+
+    # 모든 z_i를 위한 단일 optimizer
+    # z_i들 + projection + alpha를 함께 학습
+    param_groups = []
+
+    # z_i들 (문서별)
+    z_params = [z_vectors[doc_id] for doc_id in doc_ids]
+    param_groups.append({"params": z_params, "lr": lr_z, "name": "z_vectors"})
+
+    # alpha gate
+    param_groups.append({"params": [model.alpha], "lr": lr_z, "name": "alpha"})
+
+    # projection (if lr_proj > 0)
+    if lr_proj > 0:
+        param_groups.append({
+            "params": model.z_to_embedding.parameters(),
+            "lr": lr_proj,
+            "name": "z_to_embedding"
+        })
+        logger.info(f"[train_shuffled] z lr={lr_z}, alpha lr={lr_z}, proj lr={lr_proj}")
+    else:
+        for param in model.z_to_embedding.parameters():
+            param.requires_grad = False
+        logger.info(f"[train_shuffled] z lr={lr_z}, alpha lr={lr_z}, proj FROZEN")
+
+    optimizer = AdamW(param_groups, weight_decay=config.get("weight_decay", 0.01))
+
+    # 학습 결과 tracking
+    best_losses = {doc_id: float("inf") for doc_id in doc_ids}
+    current_losses = {doc_id: float("inf") for doc_id in doc_ids}
+
+    # 초기 z_i 상태 저장 (변화량 측정용)
+    z_init = {doc_id: z_vectors[doc_id].clone().detach() for doc_id in doc_ids}
+
+    logger.info(f"[train_shuffled] Starting training: {num_docs} docs, {epochs} epochs")
+    logger.info(f"[train_shuffled] Initial alpha: {model.alpha.item():.4f}")
+
+    for epoch in range(epochs):
+        # 매 epoch마다 문서 순서 섞기 (핵심!)
+        random.shuffle(doc_ids)
+
+        epoch_loss = 0.0
+
+        for doc_id in doc_ids:
+            optimizer.zero_grad()
+
+            doc_data = tokenized_docs[doc_id]
+            z_i = z_vectors[doc_id]
+
+            if use_amp and scaler is not None:
+                with autocast('cuda', dtype=torch.bfloat16):
+                    outputs = model(z_i, doc_data["input_ids"], doc_data["attention_mask"])
+                    loss = outputs["loss"]
+
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                nn.utils.clip_grad_norm_(z_params + list(model.z_to_embedding.parameters()), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(z_i, doc_data["input_ids"], doc_data["attention_mask"])
+                loss = outputs["loss"]
+
+                loss.backward()
+                nn.utils.clip_grad_norm_(z_params + list(model.z_to_embedding.parameters()), 1.0)
+                optimizer.step()
+
+            loss_val = loss.item()
+            current_losses[doc_id] = loss_val
+            epoch_loss += loss_val
+
+            if loss_val < best_losses[doc_id]:
+                best_losses[doc_id] = loss_val
+
+        avg_epoch_loss = epoch_loss / num_docs
+
+        # Logging
+        if epoch % log_every == 0 or epoch == epochs - 1:
+            # z_i 변화량 통계
+            z_changes = [(z_vectors[d] - z_init[d]).norm().item() for d in doc_ids[:5]]
+            avg_z_change = sum(z_changes) / len(z_changes)
+
+            # alpha 값 추적
+            alpha_val = model.alpha.item()
+
+            logger.info(f"[Epoch {epoch}/{epochs}] avg_loss={avg_epoch_loss:.4f}, "
+                       f"alpha={alpha_val:.4f}, avg_z_change={avg_z_change:.4f}")
+
+            # 첫 문서 샘플 생성 테스트
+            if epoch in {0, 1, 5, 10, 20, 50, epochs-1}:
+                test_doc_id = list(tokenized_docs.keys())[0]
+                try:
+                    sample = model.generate_from_z(
+                        z_vectors[test_doc_id].detach(),
+                        max_new_tokens=50,
+                        do_sample=True
+                    )
+                    logger.info(f"  [{test_doc_id}] Epoch {epoch} sample: {sample[:100]}...")
+                except Exception as e:
+                    logger.warning(f"  [{test_doc_id}] Epoch {epoch} generate failed: {e}")
+
+        # Early stopping 체크 (평균 loss 기준)
+        if avg_epoch_loss < early_stop_loss:
+            logger.info(f"[train_shuffled] Early stop at epoch {epoch}, avg_loss={avg_epoch_loss:.4f}")
+            break
+
+    logger.info(f"[train_shuffled] Final alpha: {model.alpha.item():.4f}")
+
+    return best_losses
+
+
 def run_write_phase_training(config_path: str = None, config: dict = None, test_mode: bool = False):
     """
     Phase 1: Write Phase 전체 학습 실행
@@ -322,9 +467,9 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     logger.info(f"Tokenized {len(tokenized_docs)} documents")
 
     # ==========================================
-    # 4. Training: Document-wise z_i Optimization
+    # 4. Training: Shuffled Document Training
     # ==========================================
-    logger.info("\n[Step 4] Training z_i for each document")
+    logger.info("\n[Step 4] Training z_i with shuffled documents (drift 방지)")
 
     train_config = config.training
     use_amp = train_config.get("use_amp", True)
@@ -332,47 +477,42 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
 
     # Training config 로깅
     lr_z = float(train_config.get("lr_z", 1e-2))
-    lr_proj = float(train_config.get("lr_proj", 0))
+    lr_proj = float(train_config.get("lr_proj", 1e-5))
     epochs_per_doc = train_config.get("epochs_per_doc", 100)
-    logger.info(f"Training config: lr_z={lr_z}, lr_proj={lr_proj}, epochs_per_doc={epochs_per_doc}")
+    logger.info(f"Training config: lr_z={lr_z}, lr_proj={lr_proj}, epochs={epochs_per_doc}")
     logger.info(f"Projection: {'FROZEN' if lr_proj == 0 else f'learning (lr={lr_proj})'}")
-
-    results = {
-        "losses": {},
-        "num_docs": len(corpus),
-        "config": OmegaConf.to_container(config),
-    }
+    logger.info(f"Training mode: SHUFFLED (all docs trained together)")
 
     save_dir = Path(config.logging.get("save_dir", "./checkpoints/phase1_write"))
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # 문서별 학습
     doc_ids_list = list(tokenized_docs.keys())
 
-    for i, doc_id in enumerate(tqdm(doc_ids_list, desc="Training z_i")):
-        doc_data = tokenized_docs[doc_id]
+    # 모든 문서에 대해 z_i 생성
+    z_vectors = {}
+    for doc_id in doc_ids_list:
+        z_vectors[doc_id] = model.create_z_for_doc()
+    logger.info(f"Created {len(z_vectors)} z_i vectors")
 
-        z_i, loss = train_single_document(
-            model=model,
-            doc_id=doc_id,
-            doc_ids=doc_data["input_ids"],
-            doc_attention_mask=doc_data["attention_mask"],
-            config=train_config,
-            scaler=scaler,
-        )
+    # Shuffled training 실행
+    losses = train_shuffled_documents(
+        model=model,
+        tokenized_docs=tokenized_docs,
+        z_vectors=z_vectors,
+        config=train_config,
+        scaler=scaler,
+    )
 
-        # z_pool에 추가
-        z_pool_manager.add_z(doc_id, z_i)
-        results["losses"][doc_id] = loss
+    # 결과 저장
+    results = {
+        "losses": losses,
+        "num_docs": len(corpus),
+        "config": OmegaConf.to_container(config),
+    }
 
-        # 진행 상황 로깅
-        if (i + 1) % 10 == 0 or (i + 1) == len(doc_ids_list):
-            avg_loss = sum(results["losses"].values()) / len(results["losses"])
-            logger.info(f"Progress: {i+1}/{len(doc_ids_list)}, Avg Loss: {avg_loss:.4f}")
-
-        # 중간 저장 (매 100개)
-        if (i + 1) % 100 == 0:
-            z_pool_manager.save(save_dir / f"z_pool_checkpoint_{i+1}.pt")
+    # z_pool에 추가
+    for doc_id in doc_ids_list:
+        z_pool_manager.add_z(doc_id, z_vectors[doc_id].detach())
 
     # ==========================================
     # 5. Final Save
@@ -396,13 +536,14 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     logger.info(f"Saved projection to: {proj_path}")
 
     # ==========================================
-    # 6. Validation: Generate from z
+    # 6. Validation: Generate from z + Keyword Check
     # ==========================================
     logger.info("\n[Step 6] Validation: Generate from learned z")
 
     # Projection 상태 확인
     proj_frozen = not any(p.requires_grad for p in model.z_to_embedding.parameters())
     logger.info(f"Projection layer: {'FROZEN' if proj_frozen else 'TRAINABLE'}")
+    logger.info(f"Final alpha value: {model.alpha.item():.4f}")
 
     # z_pool 통계
     z_pool_tensor = z_pool_manager.get_pool_tensor()
@@ -410,8 +551,32 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
     logger.info(f"z_pool stats: mean={z_pool_tensor.mean():.4f}, std={z_pool_tensor.std():.4f}, "
                f"min={z_pool_tensor.min():.4f}, max={z_pool_tensor.max():.4f}")
 
+    def extract_keywords(text: str, top_n: int = 10) -> set:
+        """문서에서 주요 키워드 추출 (간단 버전: 길이 4+ 단어)"""
+        import re
+        words = re.findall(r'\b[a-zA-Z]{4,}\b', text.lower())
+        # 빈도순 정렬
+        from collections import Counter
+        word_counts = Counter(words)
+        # stopwords 제외
+        stopwords = {'this', 'that', 'with', 'from', 'have', 'were', 'been', 'their', 'which', 'would', 'could', 'should', 'there', 'where', 'when', 'what', 'about', 'into', 'more', 'some', 'also', 'than', 'them', 'then', 'only', 'over', 'such', 'just', 'like', 'being', 'other', 'very', 'after', 'most', 'make', 'made', 'well', 'back', 'even', 'want', 'give', 'because', 'these', 'first', 'your', 'said'}
+        filtered = [(w, c) for w, c in word_counts.most_common(top_n * 2) if w not in stopwords]
+        return set(w for w, c in filtered[:top_n])
+
+    def check_keyword_overlap(original: str, generated: str) -> tuple:
+        """원문과 생성문의 키워드 겹침 확인"""
+        orig_kw = extract_keywords(original)
+        gen_kw = extract_keywords(generated)
+        if not orig_kw:
+            return 0.0, set(), set()
+        overlap = orig_kw & gen_kw
+        ratio = len(overlap) / len(orig_kw)
+        return ratio, overlap, orig_kw
+
     # 몇 개 샘플 생성
     num_samples = min(3, len(doc_ids_list))
+    total_keyword_score = 0.0
+
     for i in range(num_samples):
         doc_id = doc_ids_list[i]
         z_i = z_pool_manager.get_z(doc_id).to(model.device)
@@ -424,15 +589,27 @@ def run_write_phase_training(config_path: str = None, config: dict = None, test_
         # 샘플링과 greedy 둘 다 테스트
         generated_sample = model.generate_from_z(z_i, max_new_tokens=128, do_sample=True)
         generated_greedy = model.generate_from_z(z_i, max_new_tokens=128, do_sample=False)
-        original = corpus[doc_id][:200]
+        original = corpus[doc_id]
 
         # z_embed 통계
         stats = model.get_z_embed_stats(z_i)
 
         logger.info(f"z_embed stats: norm={stats['z_embed_norm']:.4f}, mean={stats['z_embed_mean']:.4f}, std={stats['z_embed_std']:.4f}")
-        logger.info(f"Original (first 200 chars): {original}...")
+        logger.info(f"Original (first 200 chars): {original[:200]}...")
         logger.info(f"Generated (sampling): {generated_sample[:200]}...")
         logger.info(f"Generated (greedy):   {generated_greedy[:200]}...")
+
+        # Keyword overlap check (objective verification)
+        kw_ratio, overlap, orig_kw = check_keyword_overlap(original, generated_sample)
+        total_keyword_score += kw_ratio
+        logger.info(f"Keyword check: {kw_ratio:.1%} overlap ({len(overlap)}/{len(orig_kw)})")
+        logger.info(f"  Original keywords: {list(orig_kw)[:5]}...")
+        logger.info(f"  Matched keywords:  {list(overlap)}")
+
+    # 전체 keyword 점수
+    avg_keyword_score = total_keyword_score / num_samples if num_samples > 0 else 0
+    logger.info(f"\n[Objective] Avg keyword overlap: {avg_keyword_score:.1%}")
+    results["avg_keyword_score"] = avg_keyword_score
 
     logger.info("\n" + "=" * 60)
     logger.info("Phase 1 Training Complete!")

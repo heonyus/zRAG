@@ -29,7 +29,7 @@ data:
 training:
   epochs_per_doc: 100   # 문서당 z_i 학습 epoch
   lr_z: 1e-2            # z_i learning rate (높게)
-  lr_proj: 0            # projection freeze (drift 방지)
+  lr_proj: 1e-5         # projection 학습 (매우 낮은 lr로 drift 방지)
   weight_decay: 0.01
   use_amp: true         # Mixed precision
   early_stop_loss: 0.5  # 이 loss 이하면 early stop

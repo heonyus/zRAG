@@ -1,0 +1,54 @@
+# Phase 1: Write Phase - Token-as-Document Learning
+#
+# 교수님 의도 (2=A):
+# - z_i만 넣으면 해당 문서 D_i가 생성되도록 학습
+# - LLM freeze, z_i + projection만 학습
+#
+# 성공 기준:
+# - z_i만 넣었을 때 문서가 복원되는가?
+# - Loss(NLL)가 충분히 낮아지는가?
+#
+# 사용법:
+#   python training/train_write_phase.py --config configs/phase1_write.yaml
+#   python training/train_write_phase.py --config configs/phase1_write.yaml --test
+
+model:
+  llm_name: "Qwen/Qwen3-8B"
+  quantization: "4bit"
+
+memory:
+  m_tokens: 4           # 문서당 memory token 수
+  z_dim: 256            # 각 token의 벡터 차원
+
+data:
+  dataset: "natural_questions"
+  save_dir: "./data/raw"
+  num_docs: 200         # Phase 1은 200개로 시작 (L4 24GB 기준 충분)
+  max_doc_length: 512   # 문서 최대 토큰 수
+
+training:
+  epochs_per_doc: 100   # 문서당 z_i 학습 epoch
+  lr_z: 1e-2            # z_i learning rate (높게)
+  lr_proj: 1e-4         # projection learning rate
+  weight_decay: 0.01
+  use_amp: true         # Mixed precision
+  early_stop_loss: 0.5  # 이 loss 이하면 early stop
+  log_every: 20         # 로깅 주기
+
+logging:
+  project: "zrag-phase1"
+  run_name: "write-phase-poc"
+  save_dir: "./checkpoints/phase1_write"
+  log_dir: "./logs/phase1_write"
+
+# Phase 3에서 이 결과물 사용:
+# - z_pool.pt: 학습된 z_i들 [num_docs, m_tokens, z_dim]
+# - projection.pt: z_to_embedding layer weights
+
+# GCP g2-standard-4 (L4 24GB) 기준:
+# - num_docs=200: 충분히 가능
+# - num_docs=500: 가능
+# - num_docs=1000+: 가능 (Phase 1은 문서 하나씩 학습하므로)
+#
+# 주의: Phase 3 (Read)에서는 num_docs가 prefix 길이에 영향
+# Phase 1에서는 num_docs가 "총 학습할 문서 수"일 뿐, 메모리 부담 없음

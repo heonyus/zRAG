@@ -300,6 +300,59 @@ class ParametricMemoryLLM(nn.Module):
         self.memory_pool.data = state["memory_pool"]
         self.z_to_embedding.load_state_dict(state["z_to_embedding"])
 
+    def load_from_phase1(self, z_pool_path: str, projection_path: str = None):
+        """
+        Phase 1 (Write Phase) 결과물 로드
+
+        Phase 1에서 학습된:
+        - z_pool.pt: 학습된 z_i들 [num_docs, m_tokens, z_dim]
+        - projection.pt: z_to_embedding layer weights
+
+        Args:
+            z_pool_path: z_pool.pt 경로
+            projection_path: projection.pt 경로 (optional)
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # z_pool 로드
+        checkpoint = torch.load(z_pool_path, map_location=self.device)
+        z_pool = checkpoint["z_pool"]  # [num_docs, m_tokens, z_dim]
+
+        # Shape 검증
+        loaded_num_docs, loaded_m_tokens, loaded_z_dim = z_pool.shape
+        if loaded_m_tokens != self.m_tokens:
+            raise ValueError(f"m_tokens mismatch: loaded={loaded_m_tokens}, model={self.m_tokens}")
+        if loaded_z_dim != self.z_dim:
+            raise ValueError(f"z_dim mismatch: loaded={loaded_z_dim}, model={self.z_dim}")
+
+        # num_docs가 다른 경우 처리
+        if loaded_num_docs != self.num_docs:
+            logger.warning(f"num_docs mismatch: loaded={loaded_num_docs}, model={self.num_docs}")
+            if loaded_num_docs < self.num_docs:
+                # Phase 1에서 학습한 것보다 모델이 크면, 나머지는 랜덤 초기화 유지
+                self.memory_pool.data[:loaded_num_docs] = z_pool.to(self.device)
+                logger.info(f"Loaded {loaded_num_docs} z vectors, kept {self.num_docs - loaded_num_docs} random")
+            else:
+                # Phase 1에서 학습한 것이 더 많으면, 앞부분만 사용
+                self.memory_pool.data = z_pool[:self.num_docs].to(self.device)
+                logger.info(f"Loaded first {self.num_docs} z vectors from {loaded_num_docs}")
+        else:
+            self.memory_pool.data = z_pool.to(self.device)
+            logger.info(f"Loaded {loaded_num_docs} z vectors")
+
+        # Projection layer 로드 (있으면)
+        if projection_path:
+            proj_checkpoint = torch.load(projection_path, map_location=self.device)
+            self.z_to_embedding.load_state_dict(proj_checkpoint["z_to_embedding"])
+            logger.info(f"Loaded projection from {projection_path}")
+
+        # doc_id 매핑 정보 저장 (필요시 사용)
+        self.doc_ids = checkpoint.get("doc_ids", [])
+        self.doc_id_to_idx = checkpoint.get("doc_id_to_idx", {})
+
+        logger.info(f"Phase 1 load complete: {len(self.doc_ids)} docs")
+
     def get_memory_stats(self) -> dict:
         """메모리 사용량 통계"""
         Z_params = self.num_docs * self.m_tokens * self.z_dim

@@ -1,0 +1,65 @@
+# Phase 1 v2: Write Phase with QA-aligned Corpus
+# 핵심 변경: corpus_builder.py로 생성한 corpus 사용 (100% QA 매칭 보장)
+#
+# 사용 전 corpus 생성:
+#   python data/corpus_builder.py --num_qa 1000 --num_docs 200 --output_dir checkpoints/phase2_corpus
+#
+# 실행:
+#   python training/train_write_phase.py --config configs/phase1_write_v2.yaml
+
+experiment:
+  name: "phase1_write_v2"
+  description: "Phase 1 Write with QA-aligned corpus (100% coverage)"
+  version: "2.0"
+
+# ==========================================
+# LLM 모델 설정
+# ==========================================
+model:
+  llm_name: "Qwen/Qwen3-8B"
+  quantization: "4bit"
+
+# ==========================================
+# Memory 설정 (z vectors)
+# ==========================================
+memory:
+  num_docs: 200       # corpus 문서 수
+  z_dim: 256          # z vector 차원
+  m_tokens: 16        # 문서당 memory token 수
+
+# ==========================================
+# 데이터 설정 - v2 corpus 사용
+# ==========================================
+data:
+  # corpus_builder.py 출력 사용
+  corpus_path: "checkpoints/phase2_corpus/corpus.json"
+  # (또는 기존처럼 dataset에서 추출)
+  dataset: "hotpot_qa"
+  num_docs: 200
+  max_doc_length: 512
+
+# ==========================================
+# 학습 설정
+# ==========================================
+training:
+  lr_z: 0.01          # z vector learning rate
+  lr_proj: 1e-5       # projection layer learning rate (0 = frozen)
+  epochs_per_doc: 50  # epoch 수
+  log_every: 10       # 로그 출력 주기
+  use_amp: true       # Mixed precision
+  early_stop_loss: 0.5
+  weight_decay: 0.01
+  checkpoint_every: 10
+
+  # 안전장치
+  collapse_threshold: 0.01  # z_std가 이 아래면 경고
+  stagnation_patience: 10   # 개선 없는 epoch 한계
+
+# ==========================================
+# 로깅 및 저장
+# ==========================================
+logging:
+  project: "zrag-phase1-v2"
+  run_name: "write_v2"
+  save_dir: "./checkpoints/phase1_v2"   # 새 디렉토리 (기존과 분리)
+  log_dir: "./logs/phase1_v2"

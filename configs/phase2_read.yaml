@@ -1,0 +1,91 @@
+# Phase 2: Read Phase Training Config
+#
+# 목표: Query-conditioned evidence generation 학습
+# 학습: -log P(evidence | query, Z; θ)
+#
+# 전제조건:
+#   1. corpus_builder.py로 QA-aligned corpus 생성
+#   2. Phase 1 (Write Phase) 완료: z vectors + projection 학습
+#
+# 실행 순서:
+#   1. python data/corpus_builder.py --num_qa 1000 --num_docs 200 --output_dir checkpoints/phase2_corpus
+#   2. python training/train_write_phase.py --config configs/phase1_write_v2.yaml
+#   3. python training/train_read_phase.py --config configs/phase2_read.yaml
+
+experiment:
+  name: "phase2_read"
+  description: "Query-conditioned evidence generation learning"
+  version: "1.0"
+
+# ==========================================
+# Phase 1 체크포인트 (학습된 z vectors)
+# ==========================================
+phase1:
+  checkpoint_dir: "./checkpoints/phase1_v2"  # Phase 1 v2 (QA-aligned corpus)
+
+# ==========================================
+# 모델 설정
+# ==========================================
+model:
+  llm_name: "Qwen/Qwen3-8B"
+  quantization: "4bit"
+  lora:
+    enabled: true
+    r: 32
+    alpha: 64
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    dropout: 0.05
+
+# ==========================================
+# Memory 설정 (Phase 1과 동일해야 함!)
+# ==========================================
+memory:
+  num_docs: 200       # corpus_builder와 동일
+  z_dim: 256
+  m_tokens: 16
+
+# ==========================================
+# 데이터 설정 (corpus_builder 출력 사용)
+# ==========================================
+data:
+  train_path: "checkpoints/phase2_corpus/qa_train.json"
+  val_path: "checkpoints/phase2_corpus/qa_val.json"
+  max_samples: null   # null = 전체 사용
+  max_query_length: 128
+  max_evidence_length: 256
+
+# ==========================================
+# 학습 설정
+# ==========================================
+training:
+  epochs: 10
+  batch_size: 2
+  gradient_accumulation: 8
+
+  # Learning rates
+  lr_z: 1e-3          # z vectors (fine-tune)
+  lr_proj: 1e-4       # projection layer
+  lr_lora: 2e-5       # LoRA adapters
+
+  # What to train
+  train_z: true       # z vectors fine-tune
+  train_proj: true    # projection layer
+  train_lora: true    # LoRA adapters
+
+  # Top-k routing
+  use_topk_routing: true
+  topk_docs: 8        # query와 유사한 Top-8 문서만 사용
+
+  # Others
+  use_amp: true
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+
+# ==========================================
+# 로깅 및 저장
+# ==========================================
+logging:
+  project: "zrag-phase2-read"
+  run_name: "read_v1"
+  save_dir: "./checkpoints/phase2_read"
+  log_dir: "./logs/phase2_read"

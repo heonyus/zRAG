@@ -16,20 +16,18 @@ dependencies = [
     "peft>=0.7.0",
     "bitsandbytes>=0.41.0",
     "accelerate>=0.24.0",
-
     # Data
     "datasets>=2.14.0",
     "sentence-transformers>=2.2.0",
-
     # Evaluation
     "rouge-score>=0.1.2",
-
     # Utilities
     "tqdm",
     "numpy",
     "pandas",
     "pyyaml",
     "omegaconf",
+    "matplotlib>=3.10.8",
 ]
 
 [project.optional-dependencies]

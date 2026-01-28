@@ -1,0 +1,133 @@
+# Phase 1.5: Evidence Generation Training Configuration
+#
+# Goal: Train LoRA adapters to generate extractive evidence from [z_i prefix] + query
+# Freeze: z_pool, projection (from Phase 1)
+# Train: LoRA adapters only
+#
+# Usage:
+#   python experiments/phase1_5_runner.py --config configs/phase1_5_evidence.yaml
+
+experiment:
+  name: "phase1_5_evidence"
+  description: "LoRA training for evidence generation with frozen z_i prefix"
+  version: "1.0"
+
+# =============================================================================
+# Phase 1 checkpoint (FROZEN)
+# =============================================================================
+phase1:
+  checkpoint_dir: "checkpoints/phase1_v2"
+  freeze_z_pool: true       # CRITICAL: z vectors must be frozen
+  freeze_projection: true   # Default: projection frozen
+
+# =============================================================================
+# Data paths
+# =============================================================================
+data:
+  corpus_dir: "checkpoints/phase2_corpus"
+  split: "val"  # "val" (88 pairs) or "train" (356 pairs)
+
+  # Evidence extraction
+  evidence_method: "answer_span"      # "answer_span" | "sentence_ranker"
+  fallback_method: "sentence_ranker"  # Fallback if primary fails
+  context_sentences: 2                # Sentences around answer (for answer_span)
+  top_k_sentences: 3                  # Top sentences (for sentence_ranker)
+
+  # Tokenization limits
+  max_query_length: 128
+  max_evidence_length: 256
+
+# =============================================================================
+# Model settings
+# =============================================================================
+model:
+  llm_name: "Qwen/Qwen3-8B"
+  quantization: "4bit"
+
+  # Memory (must match Phase 1)
+  m_tokens: 16
+  z_dim: 256
+
+# =============================================================================
+# LoRA configuration
+# =============================================================================
+lora:
+  enabled: true
+  r: 32
+  alpha: 64
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+  dropout: 0.05
+
+# =============================================================================
+# Training settings
+# =============================================================================
+training:
+  epochs: 10
+  batch_size: 2
+  gradient_accumulation: 1
+
+  # Learning rate (only LoRA is trained)
+  lr_lora: 2e-5
+
+  # Regularization
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+
+  # Mixed precision
+  use_amp: true
+
+  # Checkpointing
+  save_best: true
+  save_last: true
+
+# =============================================================================
+# Evaluation settings
+# =============================================================================
+evaluation:
+  max_new_tokens: 256
+  num_samples: null  # null = all
+
+  # Metrics
+  metrics:
+    - answer_coverage    # Does evidence contain answer?
+    - source_overlap     # Token overlap with source doc (extractive-ness)
+    - ngram_overlap_4    # 4-gram overlap with source doc
+    - rouge_l            # ROUGE-L vs target evidence
+    - length_stats       # Generation length statistics
+
+  # Thresholds for warnings
+  thresholds:
+    source_overlap_min: 0.5   # Warn if < 50%
+    answer_coverage_min: 0.7  # Warn if < 70%
+
+# =============================================================================
+# Regression testing (verify Phase 1 not degraded)
+# =============================================================================
+regression:
+  enabled: true
+  num_docs: 50          # Subset for speed
+  threshold: 0.02       # 2% max drop allowed
+
+  tests:
+    - a1_confusion      # z -> doc matching
+    - a3_zshuffle       # Shuffled z sanity check
+
+# =============================================================================
+# Output settings
+# =============================================================================
+output:
+  out_root: "results/phase1_5"
+  seed: 42
+
+# =============================================================================
+# Smoke test settings (for --smoke_test flag)
+# =============================================================================
+smoke_test:
+  epochs: 1
+  num_train_samples: 20
+  num_eval_samples: 10
+  regression_num_docs: 20

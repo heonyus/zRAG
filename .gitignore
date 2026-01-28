@@ -77,3 +77,6 @@ Thumbs.db
 credentials.json
 
 docs/_archive/
+
+# Experiment results (generated outputs)
+results/

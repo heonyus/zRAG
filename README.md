@@ -85,6 +85,15 @@ uv sync
 
 # Or using pip
 pip install -e .
+
+conda deactivate
+cd data/zRAG
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows (PowerShell)
+.\.venv\Scripts\Activate.ps1
+
 ```
 
 ### Phase 1: Write Phase Training

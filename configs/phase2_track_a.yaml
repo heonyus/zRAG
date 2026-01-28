@@ -1,0 +1,159 @@
+# Phase 2: Track A - Evidence → Answer 분리 평가
+# zRAG vs RAG (BM25, Dense, Contriever) 비교 실험
+
+experiment:
+  name: "phase2_track_a"
+  description: "zRAG vs RAG Evidence Generation Comparison (Track A)"
+  version: "1.0"
+
+# ==========================================
+# Phase 2 체크포인트 (Query-conditioned 학습 완료)
+# ==========================================
+phase1:
+  # Phase 2 학습 결과 사용 (z vectors + LoRA fine-tuned)
+  checkpoint_dir: "./checkpoints/phase2_read"
+  # Phase 2 학습 결과:
+  # - Train loss: 1.81 → 0.92
+  # - Eval loss: 1.61 → 1.19
+
+# ==========================================
+# zRAG 모델 설정 (Stage 1 Evidence 생성용)
+# ==========================================
+model:
+  llm_name: "Qwen/Qwen3-8B"
+  quantization: "4bit"
+  # Evidence 생성 시 LoRA 사용 여부 (Phase 2에서 fine-tune 한 경우 true로)
+  lora:
+    enabled: true   # Phase 2 LoRA 로드 활성화
+    r: 32
+    alpha: 64
+    target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+    dropout: 0.05
+    # LoRA 경로 (null이면 checkpoint_dir/best.pt_lora에서 자동 탐색)
+    path: null
+
+memory:
+  num_docs: 200       # Phase 1에서 학습한 문서 수
+  z_dim: 256          # Memory vector 차원
+  m_tokens: 16        # 문서당 memory token 수
+
+# ==========================================
+# zRAG Evidence 생성 설정
+# ==========================================
+zrag:
+  # Top-k Routing: Query와 유사한 문서만 선택
+  # null이면 전체 Z 사용 (기존 동작, 200*16=3200 tokens)
+  # 8-16 권장: 노이즈 감소 + 관련 문서 집중
+  top_k_docs: 8
+
+# ==========================================
+# Stage 2 Reader (완전 고정 - 공정 비교)
+# ==========================================
+reader:
+  model: "Qwen/Qwen3-8B"
+  quantization: "4bit"
+  lora: null          # NO LoRA - 완전 frozen
+  decoding:
+    do_sample: false  # greedy decoding (deterministic)
+    max_new_tokens: 64
+    temperature: 1.0
+    top_p: 1.0
+  # 고정 프롬프트 템플릿
+  prompt_template: |
+    Answer the question based on the given evidence.
+
+    Evidence: {evidence}
+
+    Question: {query}
+    Answer:
+
+# ==========================================
+# 데이터 설정
+# ==========================================
+data:
+  dataset: "hotpot_qa"          # Phase 1과 동일 (hotpot_qa로 학습함)
+  split: "validation"           # dev/test 분리
+  max_samples: 100              # 평가 샘플 수 (validation set 89개)
+  filter_by_phase1_corpus: true # Phase 1 corpus에 정답 있는 QA만 사용
+  # Phase 2 corpus 사용 (100% gold doc coverage 보장)
+  corpus_dir: "./checkpoints/phase2_corpus"
+
+# ==========================================
+# Cost Matching (공정 비교)
+# ==========================================
+evidence_budget:
+  max_tokens: 512     # Evidence 토큰 상한
+  top_k: 5            # RAG에서 검색할 문서 수
+
+# ==========================================
+# Baseline 설정
+# ==========================================
+baselines:
+  - name: "bm25"
+    type: "bm25"
+    top_k: 5
+
+  - name: "dense_e5"
+    type: "dense"
+    model: "intfloat/e5-base-v2"
+    top_k: 5
+
+  - name: "contriever"
+    type: "dense"
+    model: "facebook/contriever"
+    top_k: 5
+
+# ==========================================
+# 평가 지표
+# ==========================================
+evaluation:
+  # Stage 1: Evidence 품질
+  evidence:
+    - rouge_l           # ROUGE-L F1
+    - answer_coverage   # Evidence가 Answer 포함 비율
+    - faithfulness      # Evidence가 Answer 정당화하는지
+
+  # Stage 2: Answer 정확도
+  answer:
+    - em                # Exact Match
+    - f1                # Token-level F1
+
+  # Efficiency
+  efficiency:
+    - latency_p50       # 중앙값 응답 시간 (ms)
+    - latency_p95       # 95 percentile 응답 시간 (ms)
+    - total_tokens      # 입력 토큰 합계
+    - memory_mb         # GPU 메모리 사용량
+
+# ==========================================
+# 하드웨어 설정
+# ==========================================
+hardware:
+  device: "cuda"
+  fp16: true
+  gradient_checkpointing: false  # 추론만 하므로 불필요
+
+# ==========================================
+# 로깅 및 저장
+# ==========================================
+logging:
+  project: "zrag-phase2"
+  run_name: "track_a_comparison"
+  save_dir: "./checkpoints/phase2"
+  results_dir: "./results/phase2_track_a"
+  log_dir: "./logs/phase2"
+
+  # 저장할 파일들
+  save_evidence_samples: true   # 생성된 Evidence 예시
+  save_answer_samples: true     # 생성된 Answer 예시
+  num_samples_to_save: 50       # 저장할 샘플 수
+
+# ==========================================
+# 성공 기준 (논문 수준)
+# ==========================================
+success_criteria:
+  # zRAG가 baseline 대비 우위를 보여야 하는 지표
+  zrag_vs_bm25:
+    em_improvement: 0.05        # EM +5% 이상
+    evidence_rouge_l: 0.40      # ROUGE-L > 0.40
+    faithfulness: 0.60          # Faithfulness > 0.60

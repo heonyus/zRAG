@@ -20,6 +20,42 @@ except ImportError:
     ROUGE_AVAILABLE = False
 
 
+def extract_answer_span(text: str) -> str:
+    """
+    모델 출력에서 답 span만 추출 (공격적 후처리)
+
+    LLM은 종종 "Answer: ...", "The answer is ...", "Based on the evidence..."
+    같은 프리앰블을 붙이므로, 실제 답 부분만 추출해야 EM이 제대로 계산됨.
+    """
+    if not text:
+        return ""
+
+    t = text.strip()
+
+    # 1. 흔한 프리앰블 패턴 제거
+    t = re.sub(r'^(based on the evidence provided,?\s*)', '', t, flags=re.I).strip()
+    t = re.sub(r'^(based on the (given )?evidence,?\s*)', '', t, flags=re.I).strip()
+    t = re.sub(r'^(according to the evidence,?\s*)', '', t, flags=re.I).strip()
+    t = re.sub(r'^(the answer is|answer is|answer:)\s*', '', t, flags=re.I).strip()
+    t = re.sub(r'^(답:|답은)\s*', '', t).strip()
+
+    # 2. 첫 줄만 (HotpotQA는 단답이 많음)
+    t = t.split("\n")[0].strip()
+
+    # 3. 첫 문장만 (마침표 기준)
+    t = t.split(".")[0].strip()
+
+    # 4. 따옴표/특수문자 정리
+    t = t.strip(' "\'\t.,;:!?')
+
+    # 5. 너무 길면 앞 8단어만 (HotpotQA 답은 대부분 짧음)
+    words = t.split()
+    if len(words) > 8:
+        t = " ".join(words[:8]).strip()
+
+    return t
+
+
 def normalize_answer(text: str) -> str:
     """답변 정규화 (EM/F1 계산 전처리)"""
     text = text.lower()

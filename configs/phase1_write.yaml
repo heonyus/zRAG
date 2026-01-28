@@ -17,7 +17,7 @@ model:
   quantization: "4bit"
 
 memory:
-  m_tokens: 4           # 문서당 memory token 수
+  m_tokens: 16          # Stage 3: 8→16 (용량 증가로 재구성 압력 강화)
   z_dim: 256            # 각 token의 벡터 차원
 
 data:
@@ -27,22 +27,21 @@ data:
   max_doc_length: 512   # 문서 최대 토큰 수
 
 training:
-  # === 단계별 스케일업 ===
-  # Stage 1: epochs_per_doc: 10  (빠른 검증, ~30분)
-  # Stage 2: epochs_per_doc: 30  (중간 검증, ~1.5시간)
-  # Stage 3: epochs_per_doc: 100 (최종 학습, ~5시간)
-  epochs_per_doc: 10    # Stage 1: 먼저 10 epoch으로 안정성 확인
-  lr_z: 1e-2            # z_i learning rate (높게)
-  lr_proj: 1e-5         # projection 학습 (매우 낮은 lr로 drift 방지)
+  # === Stage 3 설정 (용량+압력 강화) ===
+  # 목표: z benefit vs random +0.42 → +0.5~0.6
+  # 변경: m_tokens 16, epochs 50, lr_proj 보수적으로
+  epochs_per_doc: 50    # Stage 3: 30→50 (학습 압력 증가)
+  lr_z: 1e-3            # z_i learning rate (유지)
+  lr_proj: 5e-5         # projection 학습 (1e-4→5e-5, 보수적으로 낮춤)
   weight_decay: 0.01
   use_amp: true         # Mixed precision
   early_stop_loss: 0.5  # 이 loss 이하면 early stop
-  log_every: 5          # 스케일업: 더 자주 로깅
+  log_every: 5          # 자주 로깅
 
   # 안전장치
   collapse_threshold: 0.01    # z_std가 이 이하면 collapse 경고
-  stagnation_patience: 5      # N epoch 동안 개선 없으면 경고
-  checkpoint_every: 10        # N epoch마다 중간 저장
+  stagnation_patience: 10     # 10 epoch 동안 개선 없으면 경고 (5→10)
+  checkpoint_every: 10        # 10 epoch마다 중간 저장
 
 logging:
   project: "zrag-phase1"

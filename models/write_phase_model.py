@@ -342,22 +342,30 @@ class WritePhaseModel(nn.Module):
         return params
 
     def save_projection(self, path: str):
-        """Projection layer 저장 (z_to_embedding)"""
+        """Projection layer + alpha 저장"""
         torch.save({
             "z_to_embedding": self.z_to_embedding.state_dict(),
+            "alpha": self.alpha.detach().float().cpu(),  # alpha도 저장
             "config": {
                 "m_tokens": self.m_tokens,
                 "z_dim": self.z_dim,
                 "hidden_size": self.hidden_size,
             }
         }, path)
-        logger.info(f"Saved projection to {path}")
+        logger.info(f"Saved projection (alpha={self.alpha.item():.4f}) to {path}")
 
     def load_projection(self, path: str):
-        """Projection layer 로드"""
+        """Projection layer + alpha 로드"""
         checkpoint = torch.load(path, map_location=self.device)
         self.z_to_embedding.load_state_dict(checkpoint["z_to_embedding"])
-        logger.info(f"Loaded projection from {path}")
+
+        # alpha 로드 (backward compatibility: 없으면 skip)
+        if "alpha" in checkpoint:
+            with torch.no_grad():
+                self.alpha.copy_(checkpoint["alpha"].to(self.alpha.device, dtype=self.alpha.dtype))
+            logger.info(f"Loaded projection (alpha={self.alpha.item():.4f}) from {path}")
+        else:
+            logger.info(f"Loaded projection from {path} (no alpha in checkpoint, using default)")
 
 
 class ZPoolManager:

@@ -1,0 +1,49 @@
+{
+  "start_time": "2026-01-29T17:09:00.259217",
+  "args": {
+    "ckpt_dir": "checkpoints/phase1_v2",
+    "out_root": "results/phase1_analysis",
+    "resume_dir": null,
+    "num_docs": 20,
+    "max_eval_tokens": 256,
+    "max_new_tokens": 128,
+    "device": "cuda",
+    "seed": 42,
+    "no_amp": false,
+    "run_verification": true,
+    "run_ablations": false,
+    "skip_a1": true,
+    "skip_a2": false,
+    "skip_a3": true,
+    "skip_b1": false,
+    "skip_b2": false,
+    "run_proj_only_baseline": false,
+    "sweep_dropout": false,
+    "sweep_mtokens": false,
+    "corpus_path": null
+  },
+  "env": {
+    "timestamp": "2026-01-29T17:09:01.664703",
+    "hostname": "l4-20260116-jaeheon",
+    "platform": "Linux-5.10.0-37-cloud-amd64-x86_64-with-glibc2.31",
+    "python_version": "3.10.15 | packaged by conda-forge | (main, Oct 16 2024, 01:24:24) [GCC 13.3.0]",
+    "cwd": "/mnt/data/lhe339/zRAG",
+    "torch_version": "2.10.0+cu128",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "cudnn_version": 91002,
+    "gpu_count": 1,
+    "gpu_names": [
+      "NVIDIA L4"
+    ],
+    "git": {
+      "commit_hash": "bfb10e891f5f54e4a355297c0f4fbbf8c78a28c6",
+      "branch": "main",
+      "is_dirty": false
+    },
+    "transformers_version": "4.57.6",
+    "numpy_version": "2.2.6"
+  },
+  "end_time": "2026-01-29T17:15:03.076155",
+  "total_runtime_seconds": 362.816938
+}

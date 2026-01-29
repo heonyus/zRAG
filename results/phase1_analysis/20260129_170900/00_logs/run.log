@@ -1,0 +1,42 @@
+2026-01-29 17:09:00 [INFO] phase1_runner: ======================================================================
+2026-01-29 17:09:00 [INFO] phase1_runner: PHASE 1 VERIFICATION & ABLATION RUNNER
+2026-01-29 17:09:00 [INFO] phase1_runner: ======================================================================
+2026-01-29 17:09:00 [INFO] phase1_runner: Run directory: results/phase1_analysis/20260129_170900
+2026-01-29 17:09:00 [INFO] phase1_runner: Checkpoint: checkpoints/phase1_v2
+2026-01-29 17:09:00 [INFO] phase1_runner: Device: cuda
+2026-01-29 17:09:00 [INFO] phase1_runner: Seed: 42
+2026-01-29 17:09:00 [INFO] phase1_runner: Mode: EVAL-ONLY (no training)
+2026-01-29 17:09:02 [INFO] phase1_runner: Saved metadata to results/phase1_analysis/20260129_170900/00_meta
+2026-01-29 17:09:02 [INFO] phase1_runner: Loading model and data...
+2026-01-29 17:09:04 [INFO] phase1_runner: Model: Qwen/Qwen3-8B, m_tokens=16, z_dim=256
+2026-01-29 17:10:28 [INFO] phase1_runner: Loaded projection from checkpoints/phase1_v2/projection.pt
+2026-01-29 17:10:28 [INFO] phase1_runner: Alpha value: 1.3449
+2026-01-29 17:10:28 [INFO] phase1_runner: Loaded z_pool from checkpoints/phase1_v2/z_pool.pt (200 docs)
+2026-01-29 17:10:28 [INFO] phase1_runner: Loaded corpus from checkpoints/phase2_corpus/corpus.json (200 docs)
+2026-01-29 17:10:28 [INFO] phase1_runner: Evaluating 20 documents
+2026-01-29 17:10:28 [INFO] phase1_runner: 
+==================================================
+2026-01-29 17:10:28 [INFO] phase1_runner: VERIFICATION MODULES
+2026-01-29 17:10:28 [INFO] phase1_runner: ==================================================
+2026-01-29 17:10:28 [INFO] phase1_runner: 
+--- A2: Z-only Generation ---
+2026-01-29 17:10:28 [INFO] phase1_runner: [A2 Total] Started at 2026-01-29T17:10:28.662987
+2026-01-29 17:10:28 [INFO] phase1_runner: [A2] Starting Z-only Generation: 20 documents, max_new_tokens=128
+2026-01-29 17:10:28 [INFO] phase1_runner: [A2] Loaded 0 cached samples
+2026-01-29 17:10:28 [INFO] phase1_runner: [A2 Z-only generation] Started at 2026-01-29T17:10:28.665132
+2026-01-29 17:15:02 [INFO] phase1_runner: [A2 Z-only generation] Completed in 273.71s (4.56min)
+2026-01-29 17:15:02 [INFO] phase1_runner: [A2] Generating visualizations...
+2026-01-29 17:15:03 [INFO] phase1_runner: [A2] Generating eyeball reports...
+2026-01-29 17:15:03 [INFO] phase1_runner: Generated eyeball report: results/phase1_analysis/20260129_170900/01_verification/A2_zonly/samples/eyeball_20_worst.md
+2026-01-29 17:15:03 [INFO] phase1_runner: Generated eyeball report: results/phase1_analysis/20260129_170900/01_verification/A2_zonly/samples/eyeball_20_best.md
+2026-01-29 17:15:03 [INFO] phase1_runner: [A2] Complete. Mean ROUGE-L: 0.2375
+2026-01-29 17:15:03 [INFO] phase1_runner: [A2 Total] Completed in 274.41s (4.57min)
+2026-01-29 17:15:03 [INFO] phase1_runner: 
+==================================================
+2026-01-29 17:15:03 [INFO] phase1_runner: GENERATING SUMMARY
+2026-01-29 17:15:03 [INFO] phase1_runner: ==================================================
+2026-01-29 17:15:03 [INFO] phase1_runner: Generated ablation summary: results/phase1_analysis/20260129_170900/03_summary/ablation_summary.csv, results/phase1_analysis/20260129_170900/03_summary/ablation_summary.json
+2026-01-29 17:15:03 [INFO] phase1_runner: Generated dashboard: results/phase1_analysis/20260129_170900/03_summary/dashboard.md
+2026-01-29 17:15:03 [INFO] phase1_runner: Generated README: results/phase1_analysis/20260129_170900/03_summary/README.md
+2026-01-29 17:15:03 [INFO] phase1_runner: Total runtime: 362.82s
+2026-01-29 17:15:03 [INFO] phase1_runner: Done!

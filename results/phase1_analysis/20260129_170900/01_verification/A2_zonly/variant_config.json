@@ -1,0 +1,6 @@
+{
+  "module": "A2_zonly",
+  "num_docs": 20,
+  "max_new_tokens": 128,
+  "seed": 42
+}

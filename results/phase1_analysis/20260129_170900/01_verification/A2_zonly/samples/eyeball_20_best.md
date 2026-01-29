@@ -1,0 +1,409 @@
+# Z-only Generation: 20 Best Cases
+
+Generated: 2026-01-29T17:15:03.071767
+
+Documents where z-only generation has highest ROUGE-L with reference.
+
+Total samples: 20
+
+---
+
+## #1: doc_17 (Score: 0.4697)
+
+- ref_len: 303
+- gen_len: 556
+- len_ratio: 1.834983498349835
+
+### Reference
+
+```
+Social Distortion is an American punk rock band formed in 1978 in Fullerton, California.  The band currently consists of Mike Ness (lead vocals, lead guitar), Jonny Wickersham (rhythm guitar, backing vocals), Brent Harding (bass, backing vocals), David Hidalgo Jr. (drums), and David Kalish (keyboards).
+```
+
+### Generated
+
+```
+Social Distortion is an American punk rock band formed in 1979 in Fullerton, California.  The band currently consists of Mike Ness (lead vocals, lead guitar), Jonny Wiggs (rhythm guitar), David Hidalgo (bass), Mike Alway (drums), and David J.  The band has gone through several lineup changes over the years, but has maintained a core sound that blends punk rock with elements of classic rock and roll.  Social Distortion is known for their storytelling lyrics and catchy, anthemic songs.  The band h
+```
+
+---
+
+## #2: doc_11 (Score: 0.4341)
+
+- ref_len: 247
+- gen_len: 455
+- len_ratio: 1.8421052631578947
+
+### Reference
+
+```
+Robert Anthony Eden, 1st Earl of Avon, (12 June 1897 – 14 January 1977) was a British Conservative politician who served three periods as Foreign Secretary and then a relatively brief term as Prime Minister of the United Kingdom from 1955 to 1957.
+```
+
+### Generated
+
+```
+Robert Anthony Eden, 1st Earl of Avon, (10 June 1901 – 14 January 1977) was a British Conservative politician who served as the Prime Minister of the United Kingdom from 1957 until his resignation in 1959. He is remembered for his role in the Suez Crisis and for the manner in which he handled the aftermath of that crisis. He was born in the...	Grants of the Earldom of Avon were made to Eden's son, Lord Avon, and to his grandson, Lord Avon, and then to
+```
+
+---
+
+## #3: doc_10 (Score: 0.4162)
+
+- ref_len: 590
+- gen_len: 481
+- len_ratio: 0.8152542372881356
+
+### Reference
+
+```
+Martin Heidegger ( ; ] ; 26 September 188926 May 1976) was a German philosopher and a seminal thinker in the Continental tradition and philosophical hermeneutics.  According to the "Internet Encyclopedia of Philosophy", he is "widely acknowledged to be one of the most original and important philosophers of the 20th century".  Heidegger is best known for his contributions to phenomenology and existentialism, though as the "Stanford Encyclopedia of Philosophy" cautions, "his thinking should be ide
+```
+
+### Generated
+
+```
+Martin Heidegger ( ; ] ; 26 September 188919 June 1976) was a German philosopher and a seminal figure in 20th-century philosophy, and one of the most influential thinkers of the 20th century.  He is best known for his 1927 book "Sein und Zeit" (Being and Time), which is considered one of the most important philosophical works of the 20th century and one of the most important books in the history of philosophy.  Heidegger is also known for his work as a Nazi party member, which
+```
+
+---
+
+## #4: doc_12 (Score: 0.3409)
+
+- ref_len: 481
+- gen_len: 507
+- len_ratio: 1.054054054054054
+
+### Reference
+
+```
+The Palazzo is a luxury hotel and casino resort located on the Las Vegas Strip in Paradise, Nevada.  It is the tallest completed building in Nevada.  Designed by the Dallas based HKS, Inc., the hotel offers luxury in an Italian Renaissance ambiance.  The hotel and casino are part of a larger complex (operated as one hotel) comprising the adjoining Venetian Resort and Casino and the Sands Convention Center, all of which are owned and operated by the Las Vegas Sands Corporation.
+```
+
+### Generated
+
+```
+The Palazzo is a 378 room luxury hotel and casino located on the Las Vegas Strip in Paradise, Nevada.  The hotel is owned by the Palazzo Hotel and Casino, a subsidiary of the Las Vegas Sands Corporation.  The property was designed by noted architect Robert A. M. Stern and opened in 2001.  The building is a 17 story structure with a 12 story podium and a 25 story tower.  The hotel is the second largest hotel in Las Vegas, surpassed only by the Bellagio and the New York, New York Hotel and Casino.
+```
+
+---
+
+## #5: doc_9 (Score: 0.3194)
+
+- ref_len: 316
+- gen_len: 495
+- len_ratio: 1.5664556962025316
+
+### Reference
+
+```
+Road Trip is a 2000 American comedy film directed by Todd Phillips and written by Scot Armstrong and Phillips.  The film stars Breckin Meyer, Seann William Scott, Paulo Costanzo, and DJ Qualls as four college friends who embark on an 1800-mile road trip to retrieve an illicit tape mistakenly mailed to a girlfriend.
+```
+
+### Generated
+
+```
+Road Trip is a 2000 American comedy film directed by Todd Field and written by Jim Taylor and Thomas Lennon.  The film stars Seth Green, Aaron Eckhart, and the ensemble of the television series Arrested Development.  The film was released on June 23, 2000, and was the first film to be directed by Field.  It was also the first film to be released by DreamWorks Pictures.  The film was not well received by critics, but was a box office success.  It was followed by a sequel, Road Trip 2, in 200
+```
+
+---
+
+## #6: doc_3 (Score: 0.3158)
+
+- ref_len: 462
+- gen_len: 458
+- len_ratio: 0.9913419913419913
+
+### Reference
+
+```
+Mikhail Ivanovich Glinka (Russian: Михаи́л Ива́нович Гли́нка ; 1 June [O.S. 20 May] 1804 15 February [O.S. 3 February] 1857 ) was the first Russian composer to gain wide recognition within his own country, and is often regarded as the fountainhead of Russian classical music.  Glinka's compositions were an important influence on future Russian composers, notably the members of The Five, who took Glinka's lead and produced a distinctive Russian style of music.
+```
+
+### Generated
+
+```
+Mikhail Ivanovich Glinka (Russian: Михаи́л Ива́нович Гли́нка ; 1 January 1804 15 June 1857 ) was the first great Russian composer, whose works were the foundation of the Russian national school of classical music.  Glinka was born in Nizhny Novgorod, Russia, and died in Saint Petersburg.  He studied music in Moscow, and later worked as a court composer in Saint Petersburg.  He is best known for his opera A Life for the Tsar, which is considered to be the
+```
+
+---
+
+## #7: doc_1 (Score: 0.3036)
+
+- ref_len: 773
+- gen_len: 621
+- len_ratio: 0.8033635187580854
+
+### Reference
+
+```
+Howard University Hospital, previously known as Freedmen's Hospital, is a major hospital lcated in Washington, D.C., built on the site of the previous Griffith Stadium.  The hospital has served the African American community in the area for over 150 years, having been established in 1862 to cater for the medical needs of the thousands of African Americans who came to Washington during the Civil War, seeking their freedom.  The first hospital of its kind to provide medical treatment for former sl
+```
+
+### Generated
+
+```
+Howard University Hospital, previously known as Freedmen's Hospital, is a major teaching hospital and medical centre, located in Washington, D.C., United States.  The hospital, which was founded in 1862, is located in the northwest of the city, and serves as a major medical centre for the area, as well as being a major research centre and training ground for medical professionals.  The hospital is also the largest private hospital in Washington, D.C., and has been named as the top hospital in th
+```
+
+---
+
+## #8: doc_4 (Score: 0.2920)
+
+- ref_len: 330
+- gen_len: 466
+- len_ratio: 1.412121212121212
+
+### Reference
+
+```
+The Wild is a 2006 American 3D computer animated comedy directed by animator Steve "Spaz" Williams, and written by Ed Decter, John J. Strauss, Mark Gibson and Philip Halprin.  It features the voices of Kiefer Sutherland, Jim Belushi, Janeane Garofalo, Greg Cipes, Eddie Izzard, Richard Kind, William Shatner and Patrick Warburton.
+```
+
+### Generated
+
+```
+The Wild is a 2006 American animated comedy-drama directed by John R. Ewing and written by John R. Ewing and David K. Hahn.  It is the first film in the Wild series, which is a spin-off of the 2005 animated series The Wild.  The film features the voices of Matthew Perry, Kevin Smith, Paul Reubens, John DiMaggio, Kevin Farley, Katt Williams, and the late George Carlin.  The film is set in the town of Wimberley, Colorado and stars a group of misfit kids who form a
+```
+
+---
+
+## #9: doc_18 (Score: 0.2353)
+
+- ref_len: 220
+- gen_len: 462
+- len_ratio: 2.1
+
+### Reference
+
+```
+Emma Booth (born 1982) is an Australian model and actress from Perth in Western Australia.  The former teen model and TV star played a significant role in the 2007 film "Introducing the Dwights", opposite Brenda Blethyn.
+```
+
+### Generated
+
+```
+Emma Booth (born 1984) is an Australian actress who played the role of Mandy in the 2008 film "The Miseducation of Cameron Post".  The film was directed by Larry Clark.  She also played the role of Mandy in the 2010 sequel "The Paper Heart".  She is also known for her role as the young version of the character "Mandy" in the 2010 documentary "Tarnation".  She was born in Sydney, Australia.  She is not to be confused with the American actress Emma Booth (1978
+```
+
+---
+
+## #10: doc_19 (Score: 0.2202)
+
+- ref_len: 777
+- gen_len: 506
+- len_ratio: 0.6512226512226512
+
+### Reference
+
+```
+Raymond Andrew "Ray" Winstone ( ; born 19 February 1957) is an English film and television actor.  He is mostly known for his "hard man" roles beginning with his role as Carlin in the 1979 film "Scum".  He also played Kevin, an ex-army soldier, in Quadrophenia as well as Will Scarlet in the television series "Robin of Sherwood".  He has also become well known as a voice over actor, and has recently branched out into film production.  He has appeared in films such as "Cold Mountain", "Nil By Mout
+```
+
+### Generated
+
+```
+Raymond Andrew "Ray" Winstone is an English actor and former footballer.  He has been active in film since the early 1980s, and has appeared in over 100 films.  His work has earned him international recognition, including an Academy Award nomination for his role as Billy Boy in the 1990 film "The Draughtsman's Contract".  He has been nominated for a British Academy Award for his performance in "The World's Fastest Indian" (2005).  He has also been nominated for a Golden Globe for his role in "Th
+```
+
+---
+
+## #11: doc_13 (Score: 0.2009)
+
+- ref_len: 864
+- gen_len: 430
+- len_ratio: 0.4976851851851852
+
+### Reference
+
+```
+"State of Grace" is a song by American singer-songwriter Taylor Swift from her fourth studio album "Red" (2012).  It was released to the iTunes Store on October 16, 2012, in the United States by Big Machine Records as the fourth and final promotional single from the album.  It was the only promotional single from the album that was not re-issued as an official single, as "Begin Again", "Red", and "I Knew You Were Trouble", were all later re-issued as official singles.  The song was written by Sw
+```
+
+### Generated
+
+```
+"Live and Let Die" is a song by the British rock band 	Shine. 	Originally released as the lead single from their 	third studio album "Shine" (2003), the song was written by the band's lead vocalist and guitarist 	Shine and 	Shine. 	The song was released on July 22, 2003, and was later included on the band's 	second studio album "Shine" (2003). 	"Live and Let Die" would go on to become the band's most successful single to date,
+```
+
+---
+
+## #12: doc_16 (Score: 0.1918)
+
+- ref_len: 285
+- gen_len: 524
+- len_ratio: 1.8385964912280701
+
+### Reference
+
+```
+Mark Rankin was lead vocalist with Scottish rock band Gun, who were best known for their cover of "Word Up! ", originally by Cameo.  The single was taken from the album "Swagger", and was released in 1994.  Other singles were "Better Days", "Taking on the World" and "Steal Your Fire".
+```
+
+### Generated
+
+```
+Mark Rankin was a Scottish born musician who played with the band Gun.  He was the drummer for the band, and played on all of their albums.  He was also the brother of bassist Tony Rankin.  Mark died on April 19, 2006.  His death was attributed to an accidental overdose of heroin.  His brother Tony was also a member of the band.  The band had a lot of ups and downs during their career, but they are best remembered for their song "Suffocate", which was featured in the movie "The Basketball Diarie
+```
+
+---
+
+## #13: doc_6 (Score: 0.1910)
+
+- ref_len: 710
+- gen_len: 384
+- len_ratio: 0.5408450704225352
+
+### Reference
+
+```
+James Garner (born James Scott Bumgarner; April 7, 1928 – July 19, 2014) was an American actor, producer, and voice artist.  He starred in several television series over more than five decades, including such popular roles as Bret Maverick in the 1950s western comedy series "Maverick" and Jim Rockford in "The Rockford Files", and played leading roles in more than 50 theatrical films, including "The Great Escape" (1963) with Steve McQueen, Paddy Chayefsky's "The Americanization of Emily" (1964), 
+```
+
+### Generated
+
+```
+    James Stewart(1907–1991)James M. Stewart (May 27, 1907 – July 2, 1991) was an American actor, a leading figure in the Golden Age of Hollywood. He was one of the most popular leading men of the 1940s and 1950s, and became one of the most successful stars of the 1950s and 1960s. He is best known for his roles in the "Andy Dalton" series of films, in which he portrayed a World War
+```
+
+---
+
+## #14: doc_5 (Score: 0.1838)
+
+- ref_len: 490
+- gen_len: 618
+- len_ratio: 1.2612244897959184
+
+### Reference
+
+```
+The University of Idaho (officially abbreviated UI, locally referred to as "the U of I") is the U.S. state of Idaho's oldest public university, located in the city of Moscow in Latah County in the northern portion of the state.  It is the state's flagship, land-grant and primary research university.  The University of Idaho was the state's sole university for 71 years, until 1963, and its College of Law, established in 1909, was first accredited by the American Bar Association in 1925.
+```
+
+### Generated
+
+```
+The United States Air Force Academy (AFRA) is the United States' military academy for training pilots and aircrew for the United States Air Force and the United States Space Force, located at the United States Air Force Academy, a United States Department of Defense military college located in Colorado Springs, Colorado, in the United States.  The Air Force Academy was founded as the United States Military Academy at Colorado Springs.  The academy was founded in 1954.  It is the only service aca
+```
+
+---
+
+## #15: doc_8 (Score: 0.1832)
+
+- ref_len: 267
+- gen_len: 506
+- len_ratio: 1.895131086142322
+
+### Reference
+
+```
+Mary Pierce (born 15 January 1975) is a French retired tennis professional who played on the Women's Tennis Association (WTA) tour.  Born in Canada, she is a citizen of Canada, and the United States.  Pierce played for France in team competitions and in the Olympics.
+```
+
+### Generated
+
+```
+Mary H. R. Kinnon (1879–1962) was an American author, poet, and editor who wrote for the Atlantic Monthly and the New York Times.  Kinnon was born in 1879 in Boston, Massachusetts, to a family that had been in the United States for several generations.  Kinnon's father was a businessman and her mother was a schoolteacher.  She was a first-generation American and of English descent.  Kinnon was an activist in the suffrage movement, and she was the first woman to serve as editor of the Atlantic Mo
+```
+
+---
+
+## #16: doc_14 (Score: 0.1679)
+
+- ref_len: 340
+- gen_len: 413
+- len_ratio: 1.214705882352941
+
+### Reference
+
+```
+Robert Anthony Stoops (born September 9, 1960) is a former American college football coach.  He is the former head football coach at the University of Oklahoma, a position he held from 1999 until he announced his retirement June 7, 2017.  During the 2000 season, Stoops led the Sooners to an Orange Bowl victory and a national championship.
+```
+
+### Generated
+
+```
+Robert Anthony Stirling (October 17, 1903 – April 13, 1979) was an American racing driver who competed in the 1950s and early 1960s. Stirling was born in 1903 in Stirling, 23rd of April 1903, in the town of Stirling, Scotland. He made his Formula One debut in the 1952 British Grand Prix at Silverstone, which was the first Grand Prix race after World War II. Stirling was a very talented driver who also competed
+```
+
+---
+
+## #17: doc_7 (Score: 0.1183)
+
+- ref_len: 528
+- gen_len: 562
+- len_ratio: 1.0643939393939394
+
+### Reference
+
+```
+Renée Montagne (pronounced Mon-TAIN) is an American radio journalist and was the co-host (with Steve Inskeep and David Greene) of National Public Radio's weekday morning news program, "Morning Edition", from May 2004 to November 11, 2016.  Montagne and Inskeep succeeded longtime host Bob Edwards, initially as interim replacements, and Greene joined the team in 2012.  Montagne had served as a correspondent and occasional host since 1989.  She usually broadcasts from NPR West in Culver City, Calif
+```
+
+### Generated
+
+```
+Renowned for his role in the American civil rights movement,  James "Jim" Bevel was born in 1941 in Jonesboro, Mississippi, the son of a farmer and a homemaker.  He was raised in the rural South, where he grew up witnessing racial segregation and discrimination firsthand.  Bevel later became a prominent organizer and strategist in the Civil Rights Movement, working with Dr.  Martin Luther King, Jr.  and the Southern Christian Leadership Conference (SCLC).  He later served as the director of the 
+```
+
+---
+
+## #18: doc_15 (Score: 0.1103)
+
+- ref_len: 209
+- gen_len: 596
+- len_ratio: 2.851674641148325
+
+### Reference
+
+```
+Carl Maria Friedrich Ernst von Weber (18 or 19 November 1786 5 June 1826) was a German composer, conductor, pianist, guitarist and critic, and was one of the first significant composers of the Romantic school.
+```
+
+### Generated
+
+```
+For the first time in history, the people of the world were united in a common cause: the defeat of fascism. The Second World War was the first time in history that the world was almost entirely united against a common enemy, and the first time that the entire world was involved in a war. The war saw the birth of the United Nations, the beginning of the Cold War, the creation of Israel, the decolonization of Africa, the end of the British and French empires, and the beginning of the nuclear age.
+```
+
+---
+
+## #19: doc_0 (Score: 0.0556)
+
+- ref_len: 127
+- gen_len: 556
+- len_ratio: 4.377952755905512
+
+### Reference
+
+```
+Teide National Park (Spanish: "Parque nacional del Teide" , ] ) is a national park located in Tenerife (Canary Islands, Spain).
+```
+
+### Generated
+
+```
+Television (TV) is a medium for the mass dissemination of audio-visual content. The term was coined in 1928 by the American Philosopher and media theorist Marshall McLuhan. The first electronic television systems were developed during the 1920s and 1930s. The first public and regular television broadcasts began in the late 1920s in several countries. The first regular television service began in Germany in 1929. The first regular television service in the United States began in 1939. The first r
+```
+
+---
+
+## #20: doc_2 (Score: 0.0000)
+
+- ref_len: 623
+- gen_len: 379
+- len_ratio: 0.608346709470305
+
+### Reference
+
+```
+Valentine's Day is a 2010 American romantic comedy film directed by Garry Marshall.  The screenplay and the story were written by Katherine Fugate, Abby Kohn and Marc Silverstein.  The film consists of an ensemble cast led by Jessica Alba, Kathy Bates, Jessica Biel, Bradley Cooper, Eric Dane, Patrick Dempsey, Héctor Elizondo, Jamie Foxx, Jennifer Garner, Topher Grace, Anne Hathaway, Ashton Kutcher, Queen Latifah, Taylor Lautner, George Lopez, Shirley MacLaine, Emma Roberts, Julia Roberts, Carter
+```
+
+### Generated
+
+```
+Grands Prix de Formule 1 1987 1987 British Grand Prix 1987 Italian Grand Prix 1987 Portuguese Grand Prix 1987 Spanish Grand Prix 1987 Swedish Grand Prix 1987 French Grand Prix 1987 German Grand Prix 1987 Belgian Grand Prix 1987 Japanese Grand Prix 1987 Mexican Grand Prix 1987 United States Grand Prix 1987 Australian Grand Prix 1987 Monaco Grand Prix 1987 San Marino Grand Prix 
+```
+
+---

@@ -1,0 +1,1 @@
+experiments/phase1_runner.py --ckpt_dir checkpoints/phase1_v2 --run_verification --skip_a1 --skip_a3 --num_docs 20 --max_new_tokens 128

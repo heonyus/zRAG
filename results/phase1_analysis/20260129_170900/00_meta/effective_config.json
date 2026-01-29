@@ -1,0 +1,12 @@
+{
+  "ckpt_dir": "checkpoints/phase1_v2",
+  "out_root": "results/phase1_analysis",
+  "num_docs": 20,
+  "max_eval_tokens": 256,
+  "max_new_tokens": 128,
+  "device": "cuda",
+  "seed": 42,
+  "use_amp": true,
+  "run_verification": true,
+  "run_ablations": false
+}

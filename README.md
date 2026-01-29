@@ -1,4 +1,4 @@
-# zRAG: LLM-as-Memory
+# mz-RAG: LLM-as-Memory
 
 > **Replacing Vector DB with Internal LLM Memory**
 

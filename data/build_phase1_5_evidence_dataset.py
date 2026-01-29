@@ -29,6 +29,14 @@ import random
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Evidence termination marker options
+# DEPRECATED: Multi-token marker causes LoRA collapse (repeating "END END END...")
+# Use --use_eos_token instead for single-token termination
+EVIDENCE_END_MARKER = "\n### END"  # Legacy: do NOT use with --add_end_marker
+
+# Placeholder for EOS token (set at runtime from tokenizer)
+EOS_TOKEN_PLACEHOLDER = "<EOS_PLACEHOLDER>"
+
 
 def load_corpus_and_qa(
     corpus_dir: str = "checkpoints/phase2_corpus",
@@ -264,6 +272,75 @@ def extract_evidence_sentence_ranker(
     return evidence, meta
 
 
+def extract_potential_entities(text: str) -> List[str]:
+    """
+    Extract potential named entities from text using simple heuristics.
+
+    Looks for:
+    - Capitalized multi-word sequences (e.g., "Craig Serling", "New York")
+    - Words after "and" that start with capital letter
+
+    Args:
+        text: Input text (typically a question)
+
+    Returns:
+        List of potential entity strings
+    """
+    entities = []
+
+    # Pattern 1: Capitalized sequences (2+ words)
+    # E.g., "Craig Serling", "Jeff Celentano", "New Jersey Devils"
+    cap_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+    entities.extend(re.findall(cap_pattern, text))
+
+    # Pattern 2: Single capitalized words that might be names (after filtering common words)
+    common_words = {'The', 'A', 'An', 'What', 'Who', 'Which', 'How', 'When', 'Where', 'Is', 'Are', 'Was', 'Were'}
+    single_cap = re.findall(r'\b([A-Z][a-z]+)\b', text)
+    for word in single_cap:
+        if word not in common_words and word not in ' '.join(entities):
+            # Only add if not already part of a multi-word entity
+            pass  # Skip single words for now to reduce false positives
+
+    return entities
+
+
+def check_multi_entity_coverage(question: str, evidence: str) -> Tuple[bool, List[str], List[str]]:
+    """
+    Check if evidence covers all named entities mentioned in the question.
+
+    Args:
+        question: Question text
+        evidence: Evidence text
+
+    Returns:
+        Tuple of (all_covered, covered_entities, missing_entities)
+    """
+    entities = extract_potential_entities(question)
+
+    if len(entities) <= 1:
+        # Single entity or no entities detected - no multi-entity issue
+        return True, entities, []
+
+    evidence_lower = evidence.lower()
+    covered = []
+    missing = []
+
+    for entity in entities:
+        # Check if entity (or close variant) appears in evidence
+        entity_lower = entity.lower()
+        if entity_lower in evidence_lower:
+            covered.append(entity)
+        else:
+            # Check for partial match (first name or last name)
+            parts = entity.split()
+            if any(part.lower() in evidence_lower for part in parts if len(part) > 2):
+                covered.append(entity)
+            else:
+                missing.append(entity)
+
+    return len(missing) == 0, covered, missing
+
+
 def build_evidence_dataset(
     corpus_dir: str,
     output_dir: str,
@@ -276,6 +353,10 @@ def build_evidence_dataset(
     tokenizer_name: str = "Qwen/Qwen3-8B",
     seed: int = 42,
     num_preview_samples: int = 20,
+    drop_fallback: bool = False,
+    add_end_marker: bool = False,
+    use_eos_token: bool = False,
+    drop_multi_entity_incomplete: bool = False,
 ) -> Dict:
     """
     Build evidence dataset from QA pairs and corpus.
@@ -292,6 +373,13 @@ def build_evidence_dataset(
         tokenizer_name: Tokenizer for token counting
         seed: Random seed
         num_preview_samples: Number of samples for preview
+        drop_fallback: If True, exclude samples where primary method failed (fallback used)
+        add_end_marker: DEPRECATED - causes LoRA collapse. Use use_eos_token instead.
+            If True, append '### END' to evidence (multi-token, causes "END END END" repetition)
+        use_eos_token: RECOMMENDED. If True, append tokenizer's EOS token to evidence.
+            Single token prevents collapse and enables clean stopping during generation.
+        drop_multi_entity_incomplete: If True, exclude samples where evidence doesn't cover all
+            entities mentioned in the question (prevents hallucination of missing info)
 
     Returns:
         Dataset statistics dict
@@ -327,11 +415,23 @@ def build_evidence_dataset(
         "success": 0,
         "primary_success": 0,
         "fallback_used": 0,
+        "dropped_fallback": 0,  # Samples dropped due to --drop_fallback
+        "dropped_multi_entity": 0,  # Samples dropped due to --drop_multi_entity_incomplete
         "no_gold_doc": 0,
         "extraction_failed": 0,
         "total_evidence_tokens": 0,
         "evidence_lengths": [],
+        # Upper bound stats (critical for quality ceiling)
+        "gold_answer_coverage": [],      # Does extracted evidence contain answer?
+        "gold_source_overlap": [],       # Token overlap between evidence and source doc
+        "fallback_answer_coverage": [],  # Same but only for fallback samples
+        "fallback_source_overlap": [],
     }
+
+    if drop_fallback:
+        print("NOTE: --drop_fallback enabled. Samples with fallback extraction will be excluded.")
+    if drop_multi_entity_incomplete:
+        print("NOTE: --drop_multi_entity_incomplete enabled. Samples with incomplete entity coverage will be excluded.")
 
     print("Building evidence dataset...")
     with open(dataset_path, "w", encoding="utf-8") as f:
@@ -384,8 +484,16 @@ def build_evidence_dataset(
                 )
 
             # Fallback if primary failed
+            is_fallback = False
             if evidence is None:
                 stats["fallback_used"] += 1
+                is_fallback = True
+
+                # Skip fallback samples if drop_fallback is enabled
+                if drop_fallback:
+                    stats["dropped_fallback"] += 1
+                    continue
+
                 if fallback_method == "sentence_ranker":
                     evidence, meta = extract_evidence_sentence_ranker(
                         document, qa["question"], qa["answer"], tokenizer,
@@ -398,6 +506,15 @@ def build_evidence_dataset(
                     )
 
             if evidence:
+                # Check multi-entity coverage if filtering is enabled
+                if drop_multi_entity_incomplete:
+                    all_covered, covered, missing = check_multi_entity_coverage(
+                        qa["question"], evidence
+                    )
+                    if not all_covered:
+                        stats["dropped_multi_entity"] += 1
+                        continue  # Skip this sample
+
                 stats["success"] += 1
                 if meta["method"] == primary_method:
                     stats["primary_success"] += 1
@@ -405,9 +522,42 @@ def build_evidence_dataset(
                 evidence_tokens = len(tokenizer.encode(evidence, add_special_tokens=False))
                 stats["total_evidence_tokens"] += evidence_tokens
                 stats["evidence_lengths"].append(evidence_tokens)
+
+                # Compute upper bound stats (critical for quality ceiling)
+                # 1. gold_answer_coverage: Does extracted evidence contain the answer?
+                ans_in_evidence = 1.0 if qa["answer"].lower() in evidence.lower() else 0.0
+                stats["gold_answer_coverage"].append(ans_in_evidence)
+
+                # 2. gold_source_overlap: Token overlap between evidence and source doc
+                ev_tokens = set(evidence.lower().split())
+                doc_tokens = set(document.lower().split())
+                src_overlap = len(ev_tokens & doc_tokens) / len(ev_tokens) if ev_tokens else 0.0
+                stats["gold_source_overlap"].append(src_overlap)
+
+                # Track fallback samples separately (is_fallback set above)
+                if is_fallback:
+                    stats["fallback_answer_coverage"].append(ans_in_evidence)
+                    stats["fallback_source_overlap"].append(src_overlap)
             else:
                 stats["extraction_failed"] += 1
                 evidence = ""
+
+            # Add termination marker if requested
+            # RECOMMENDED: use_eos_token (single token, clean stopping)
+            # DEPRECATED: add_end_marker (multi-token "### END", causes collapse)
+            if use_eos_token and evidence:
+                # Use tokenizer's EOS token (single token for clean generation stopping)
+                eos_token = tokenizer.eos_token if tokenizer.eos_token else "</s>"
+                evidence = evidence + eos_token
+            elif add_end_marker and evidence:
+                # DEPRECATED: Multi-token marker causes "END END END" repetition in LoRA
+                import warnings
+                warnings.warn(
+                    "add_end_marker is deprecated and causes LoRA collapse. "
+                    "Use --use_eos_token instead.",
+                    DeprecationWarning
+                )
+                evidence = evidence + EVIDENCE_END_MARKER
 
             sample["evidence_text"] = evidence
             sample["evidence_method"] = meta.get("method", "unknown")
@@ -443,8 +593,28 @@ def build_evidence_dataset(
     stats["fallback_rate"] = stats["fallback_used"] / stats["total"] if stats["total"] > 0 else 0
     stats["success_rate"] = stats["success"] / stats["total"] if stats["total"] > 0 else 0
 
-    # Remove evidence_lengths from saved stats (too large)
+    # Compute upper bound stats (critical for determining quality ceiling)
+    if stats["gold_answer_coverage"]:
+        stats["avg_gold_answer_coverage"] = float(np.mean(stats["gold_answer_coverage"]))
+        stats["avg_gold_source_overlap"] = float(np.mean(stats["gold_source_overlap"]))
+    else:
+        stats["avg_gold_answer_coverage"] = 0.0
+        stats["avg_gold_source_overlap"] = 0.0
+
+    # Fallback-only stats (important: if these are low, fallback is problematic)
+    if stats["fallback_answer_coverage"]:
+        stats["fallback_avg_answer_coverage"] = float(np.mean(stats["fallback_answer_coverage"]))
+        stats["fallback_avg_source_overlap"] = float(np.mean(stats["fallback_source_overlap"]))
+    else:
+        stats["fallback_avg_answer_coverage"] = 0.0
+        stats["fallback_avg_source_overlap"] = 0.0
+
+    # Remove list fields from saved stats (too large)
     del stats["evidence_lengths"]
+    del stats["gold_answer_coverage"]
+    del stats["gold_source_overlap"]
+    del stats["fallback_answer_coverage"]
+    del stats["fallback_source_overlap"]
 
     # Save manifest
     manifest = {
@@ -453,6 +623,11 @@ def build_evidence_dataset(
         "split": split,
         "primary_method": primary_method,
         "fallback_method": fallback_method,
+        "drop_fallback": drop_fallback,
+        "drop_multi_entity_incomplete": drop_multi_entity_incomplete,
+        "add_end_marker": add_end_marker,
+        "use_eos_token": use_eos_token,
+        "eos_token_used": tokenizer.eos_token if use_eos_token else None,
         "max_evidence_tokens": max_evidence_tokens,
         "context_sentences": context_sentences,
         "top_k_sentences": top_k_sentences,
@@ -472,13 +647,27 @@ def build_evidence_dataset(
     with open(preview_path, "w", encoding="utf-8") as f:
         f.write("# Phase 1.5 Evidence Dataset: Sample Preview\n\n")
         f.write(f"Generated: {datetime.now().isoformat()}\n\n")
+        if drop_fallback:
+            f.write("**NOTE**: `--drop_fallback` enabled. Fallback samples excluded.\n\n")
+        if drop_multi_entity_incomplete:
+            f.write("**NOTE**: `--drop_multi_entity_incomplete` enabled. Samples with incomplete entity coverage excluded.\n\n")
         f.write("## Statistics\n\n")
-        f.write(f"- Total samples: {stats['total']}\n")
-        f.write(f"- Success rate: {stats['success_rate']*100:.1f}%\n")
+        f.write(f"- Total QA pairs: {stats['total']}\n")
+        f.write(f"- Final dataset size: {stats['success']}\n")
         f.write(f"- Primary method success: {stats['primary_success_rate']*100:.1f}%\n")
         f.write(f"- Fallback used: {stats['fallback_rate']*100:.1f}%\n")
+        if stats.get('dropped_fallback', 0) > 0:
+            f.write(f"- Dropped (--drop_fallback): {stats['dropped_fallback']}\n")
+        if stats.get('dropped_multi_entity', 0) > 0:
+            f.write(f"- Dropped (--drop_multi_entity): {stats['dropped_multi_entity']}\n")
         f.write(f"- Avg evidence tokens: {stats.get('avg_evidence_tokens', 0):.1f}\n\n")
-        f.write("---\n\n")
+        f.write("### Upper Bound Stats (Quality Ceiling)\n\n")
+        f.write(f"- **Gold Answer Coverage**: {stats['avg_gold_answer_coverage']*100:.1f}%\n")
+        f.write(f"- **Gold Source Overlap**: {stats['avg_gold_source_overlap']*100:.1f}%\n")
+        if stats['fallback_used'] > 0:
+            f.write(f"- [Fallback only] Answer Coverage: {stats['fallback_avg_answer_coverage']*100:.1f}%\n")
+            f.write(f"- [Fallback only] Source Overlap: {stats['fallback_avg_source_overlap']*100:.1f}%\n")
+        f.write("\n---\n\n")
 
         for i, sample in enumerate(preview_samples):
             f.write(f"## Sample {i+1} (ID: {sample['sample_id']})\n\n")
@@ -514,7 +703,21 @@ def build_evidence_dataset(
     print(f"  Success: {stats['success']} ({stats['success_rate']*100:.1f}%)")
     print(f"  Primary success: {stats['primary_success']} ({stats['primary_success_rate']*100:.1f}%)")
     print(f"  Fallback used: {stats['fallback_used']} ({stats['fallback_rate']*100:.1f}%)")
+    if stats.get('dropped_fallback', 0) > 0:
+        print(f"  Dropped (--drop_fallback): {stats['dropped_fallback']}")
+    if stats.get('dropped_multi_entity', 0) > 0:
+        print(f"  Dropped (--drop_multi_entity): {stats['dropped_multi_entity']}")
+    if stats.get('dropped_fallback', 0) > 0 or stats.get('dropped_multi_entity', 0) > 0:
+        print(f"  Final dataset size: {stats['success']}")
     print(f"  Avg tokens: {stats.get('avg_evidence_tokens', 0):.1f}")
+    print(f"\n*** UPPER BOUND STATS (Quality Ceiling) ***")
+    print(f"  Gold Answer Coverage: {stats['avg_gold_answer_coverage']*100:.1f}%")
+    print(f"  Gold Source Overlap: {stats['avg_gold_source_overlap']*100:.1f}%")
+    if stats['fallback_used'] > 0:
+        print(f"  [Fallback only] Answer Coverage: {stats['fallback_avg_answer_coverage']*100:.1f}%")
+        print(f"  [Fallback only] Source Overlap: {stats['fallback_avg_source_overlap']*100:.1f}%")
+        if stats['fallback_avg_answer_coverage'] < 0.7:
+            print(f"  WARNING: Fallback answer coverage < 70% - consider stronger fallback")
 
     return stats
 
@@ -586,8 +789,39 @@ if __name__ == "__main__":
         default=42,
         help="Random seed",
     )
+    parser.add_argument(
+        "--drop_fallback",
+        action="store_true",
+        help="Exclude samples where primary method failed (fallback used). "
+             "Use this to get cleaner training data with higher answer coverage.",
+    )
+    parser.add_argument(
+        "--add_end_marker",
+        action="store_true",
+        help="DEPRECATED: Causes LoRA collapse (END END END repetition). Use --use_eos_token instead.",
+    )
+    parser.add_argument(
+        "--use_eos_token",
+        action="store_true",
+        help="RECOMMENDED: Append tokenizer's EOS token to evidence. "
+             "Single token enables clean generation stopping without collapse.",
+    )
+    parser.add_argument(
+        "--drop_multi_entity_incomplete",
+        action="store_true",
+        help="Exclude samples where evidence doesn't cover all entities in the question. "
+             "Use this to prevent hallucination of missing entity info.",
+    )
 
     args = parser.parse_args()
+
+    # Warn if deprecated option used
+    if args.add_end_marker and not args.use_eos_token:
+        print("\n" + "=" * 60)
+        print("WARNING: --add_end_marker is DEPRECATED")
+        print("This causes LoRA collapse (model outputs 'END END END...')")
+        print("Use --use_eos_token instead for clean single-token stopping.")
+        print("=" * 60 + "\n")
 
     build_evidence_dataset(
         corpus_dir=args.corpus_dir,
@@ -600,4 +834,8 @@ if __name__ == "__main__":
         top_k_sentences=args.top_k_sentences,
         tokenizer_name=args.tokenizer,
         seed=args.seed,
+        drop_fallback=args.drop_fallback,
+        add_end_marker=args.add_end_marker,
+        use_eos_token=args.use_eos_token,
+        drop_multi_entity_incomplete=args.drop_multi_entity_incomplete,
     )

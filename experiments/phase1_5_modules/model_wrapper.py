@@ -54,6 +54,9 @@ class Phase15ForwardWrapper:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
+        # For logging first generation config
+        self._first_generation_logged = False
+
     def get_z_embedding(self, z: torch.Tensor) -> torch.Tensor:
         """
         Project z to LLM embedding space (FROZEN, no grad).
@@ -243,6 +246,27 @@ class Phase15ForwardWrapper:
         Returns:
             Generated evidence string
         """
+        # Log generation config on first call
+        if not self._first_generation_logged:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("[Phase15ForwardWrapper.generate_evidence] First call config:")
+            logger.info(f"  max_new_tokens: {max_new_tokens}")
+            logger.info(f"  do_sample: {do_sample}")
+            logger.info(f"  temperature: {temperature}")
+            logger.info(f"  top_p: {top_p}")
+            logger.info(f"  pad_token_id: {self.tokenizer.pad_token_id}")
+            logger.info(f"  eos_token_id: {self.tokenizer.eos_token_id}")
+
+            # Check if LoRA is loaded
+            from peft import PeftModel
+            if isinstance(self.llm, PeftModel):
+                logger.info(f"  LoRA: ENABLED (PeftModel)")
+            else:
+                logger.info(f"  LoRA: DISABLED (base model)")
+
+            self._first_generation_logged = True
+
         # Ensure z has batch dimension
         if z.dim() == 2:
             z = z.unsqueeze(0)
@@ -273,7 +297,7 @@ class Phase15ForwardWrapper:
             torch.ones_like(prompt_ids, dtype=torch.long),
         ], dim=1)
 
-        # 6. Generate
+        # 6. Generate with repetition penalty to prevent collapse
         outputs = self.llm.generate(
             inputs_embeds=combined_embed,
             attention_mask=combined_mask,
@@ -283,17 +307,60 @@ class Phase15ForwardWrapper:
             top_p=top_p if do_sample else 1.0,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
+            repetition_penalty=1.1,  # Prevent END END END collapse
         )
 
-        # 7. Decode (skip the input part)
-        # The generate() with inputs_embeds returns the full sequence including embeddings
-        # We need to skip the prefix length
+        # 7. Decode generated tokens
+        # IMPORTANT: When using inputs_embeds (not input_ids), generate() returns
+        # ONLY the generated token IDs (no input token IDs to prepend).
+        # So we should NOT skip prefix_len.
+        #
+        # However, some models may still return input-length padding.
+        # We check the output length to handle both cases.
         prefix_len = combined_embed.size(1)
-        generated_ids = outputs[0, prefix_len:]
+        output_len = outputs.size(1)
+
+        if output_len > max_new_tokens + 10:
+            # Model returned input + generated (some architectures do this)
+            generated_ids = outputs[0, prefix_len:]
+        else:
+            # Model returned only generated tokens (standard for inputs_embeds)
+            generated_ids = outputs[0]
 
         evidence = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
 
+        # Clean up termination markers and collapse patterns
+        evidence = self._clean_evidence_output(evidence)
+
         return evidence.strip()
+
+    def _clean_evidence_output(self, evidence: str) -> str:
+        """
+        Clean evidence output by removing termination markers and collapse patterns.
+
+        Handles:
+        1. Legacy "### END" marker
+        2. "END END END..." repetition collapse
+        3. Question echo (if present at start)
+        """
+        import re
+
+        # 1. Truncate at legacy END marker
+        end_marker = "### END"
+        if end_marker in evidence:
+            evidence = evidence.split(end_marker)[0]
+
+        # 2. Remove "END" repetition patterns (LoRA collapse symptom)
+        # Pattern: "END" repeated 2+ times at the end
+        evidence = re.sub(r'(\s*END\s*){2,}$', '', evidence, flags=re.IGNORECASE)
+
+        # 3. Remove single trailing "END" (if at end after content)
+        evidence = re.sub(r'\s*END\s*$', '', evidence, flags=re.IGNORECASE)
+
+        # 4. Remove "? END" pattern (question + END collapse)
+        evidence = re.sub(r'\?\s*END.*$', '', evidence, flags=re.IGNORECASE)
+
+        return evidence
 
     def get_embedding_stats(self, z: torch.Tensor) -> Dict[str, float]:
         """

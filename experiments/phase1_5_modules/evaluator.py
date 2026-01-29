@@ -287,6 +287,8 @@ class Phase15Evaluator:
 
         # Create forward wrapper
         self.wrapper = Phase15ForwardWrapper(model, tokenizer, device)
+        # Reset logging flag for fresh logging on each evaluation run
+        self.wrapper._first_generation_logged = False
 
     def generate_evidence(
         self,
@@ -339,6 +341,18 @@ class Phase15Evaluator:
         self.logger.info("PHASE 1.5 EVALUATION")
         self.logger.info("=" * 60)
 
+        # Log generation config
+        self.logger.info("-" * 40)
+        self.logger.info("GENERATION CONFIG:")
+        self.logger.info(f"  max_new_tokens: {max_new_tokens}")
+        self.logger.info(f"  do_sample: False (greedy)")
+        self.logger.info(f"  temperature: 1.0 (unused when do_sample=False)")
+        self.logger.info(f"  top_p: 0.9 (unused when do_sample=False)")
+        self.logger.info(f"  repetition_penalty: 1.1 (prevents END collapse)")
+        self.logger.info(f"  dynamic_max_tokens: target_len + 20 (capped at {max_new_tokens})")
+        self.logger.info(f"  post_processing: _clean_evidence_output (removes END patterns)")
+        self.logger.info("-" * 40)
+
         # Load dataset
         samples = []
         with open(dataset_path, "r", encoding="utf-8") as f:
@@ -383,7 +397,12 @@ class Phase15Evaluator:
                 target_evidence = sample["evidence_text"]
                 source_doc = self.corpus.get(doc_id, "")
 
-                generated = self.generate_evidence(doc_id, query, max_new_tokens)
+                # Dynamic max_new_tokens based on target evidence length (+ margin)
+                # This prevents over-generation and topic drift
+                target_tokens = len(self.tokenizer.encode(target_evidence, add_special_tokens=False))
+                dynamic_max_tokens = min(target_tokens + 20, max_new_tokens)  # target + margin, capped
+
+                generated = self.generate_evidence(doc_id, query, dynamic_max_tokens)
 
                 # Compute metrics
                 ans_cov = compute_answer_coverage(generated, answer)

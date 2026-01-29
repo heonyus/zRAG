@@ -159,6 +159,17 @@ Examples:
         action="store_true",
         help="Quick smoke test (small dataset, 1 epoch)",
     )
+    parser.add_argument(
+        "--overfit_test",
+        action="store_true",
+        help="1-sample overfit test (verify pipeline can memorize single sample)",
+    )
+    parser.add_argument(
+        "--overfit_steps",
+        type=int,
+        default=200,
+        help="Number of steps for overfit test (default: 200)",
+    )
 
     # Dataset settings
     parser.add_argument(
@@ -179,6 +190,28 @@ Examples:
         type=int,
         default=2,
         help="Sentences around answer for answer_span",
+    )
+    parser.add_argument(
+        "--drop_fallback",
+        action="store_true",
+        help="Exclude samples where primary evidence extraction failed. "
+             "Produces cleaner dataset with higher answer coverage.",
+    )
+    parser.add_argument(
+        "--add_end_marker",
+        action="store_true",
+        help="DEPRECATED: Causes LoRA collapse (END END END repetition). Use --use_eos_token instead.",
+    )
+    parser.add_argument(
+        "--use_eos_token",
+        action="store_true",
+        help="RECOMMENDED: Append EOS token to evidence. Single token enables clean generation stopping.",
+    )
+    parser.add_argument(
+        "--drop_multi_entity_incomplete",
+        action="store_true",
+        help="Exclude samples where evidence doesn't cover all entities in the question. "
+             "Prevents hallucination of missing entity info.",
     )
 
     # Training settings
@@ -280,6 +313,11 @@ Examples:
         args.num_eval_samples = 10
         args.regression_num_docs = 20
 
+    # Handle overfit_test (1-sample pipeline verification)
+    if args.overfit_test:
+        args.skip_eval = True       # Normal eval not useful
+        args.skip_regression = True  # Not relevant for overfit
+
     # Handle eval_only
     if args.eval_only:
         args.skip_dataset = True
@@ -353,6 +391,153 @@ def load_phase1_model_and_zpool(args, logger):
                 logger.info(f"Loaded z_pool from {epoch_path} ({len(z_pool.doc_ids)} docs)")
 
     return model, z_pool
+
+
+def run_overfit_verification(model, z_pool, tokenizer, dataset_path, max_new_tokens, device, logger):
+    """
+    Verify that the model can memorize a single sample.
+
+    This is a sanity check for the training pipeline:
+    - If the model CAN'T memorize 1 sample after 200 steps, there's a bug
+    - If it CAN, then low metrics are due to data/difficulty, not implementation
+
+    Returns:
+        Dict with verification results
+    """
+    from experiments.phase1_5_modules.model_wrapper import Phase15ForwardWrapper
+
+    # Load the single sample from dataset
+    with open(dataset_path, "r") as f:
+        sample = json.loads(f.readline())
+
+    doc_id = sample.get("doc_id")
+    query = sample["question"]
+    target_evidence = sample["evidence_text"]
+    answer = sample["answer"]
+
+    if not doc_id or doc_id not in z_pool.doc_ids:
+        logger.error(f"doc_id {doc_id} not in z_pool")
+        return {"status": "error", "message": "doc_id not found"}
+
+    logger.info(f"Sample doc_id: {doc_id}")
+    logger.info(f"Query: {query[:80]}...")
+    logger.info(f"Target evidence ({len(target_evidence)} chars): {target_evidence[:100]}...")
+    logger.info(f"Answer: {answer}")
+
+    # Generate with trained model
+    wrapper = Phase15ForwardWrapper(model, tokenizer, device)
+    model.eval()
+
+    with torch.no_grad():
+        z = z_pool.get_z(doc_id).to(device)
+        generated = wrapper.generate_evidence(z, query, max_new_tokens=max_new_tokens)
+
+    logger.info(f"\nGenerated ({len(generated)} chars): {generated[:200]}...")
+
+    # Compute metrics
+    from difflib import SequenceMatcher
+
+    # 1. Answer in generated (most important - did we get the key info?)
+    ans_in_gen = answer.lower() in generated.lower()
+
+    # 2. Prefix match - does generated START with target? (handles over-generation)
+    target_clean = target_evidence.strip().lower()
+    generated_clean = generated.strip().lower()
+
+    # Check if generated starts with first N chars of target (allowing minor variations)
+    prefix_len = min(50, len(target_clean))
+    prefix_similarity = SequenceMatcher(
+        None,
+        generated_clean[:prefix_len],
+        target_clean[:prefix_len]
+    ).ratio()
+    prefix_match = prefix_similarity > 0.8
+
+    # 3. Truncated comparison - truncate generated to target length for fair comparison
+    generated_truncated = generated[:len(target_evidence)]
+
+    # Token overlap on truncated
+    gen_tokens = set(generated_truncated.lower().split())
+    target_tokens = set(target_evidence.lower().split())
+    if gen_tokens:
+        token_overlap_truncated = len(gen_tokens & target_tokens) / len(gen_tokens)
+    else:
+        token_overlap_truncated = 0.0
+
+    # Char similarity on truncated
+    char_similarity_truncated = SequenceMatcher(
+        None,
+        generated_truncated.lower(),
+        target_evidence.lower()
+    ).ratio()
+
+    # 4. Full comparison (for reference)
+    gen_tokens_full = set(generated.lower().split())
+    if gen_tokens_full:
+        token_overlap_full = len(gen_tokens_full & target_tokens) / len(gen_tokens_full)
+    else:
+        token_overlap_full = 0.0
+    char_similarity_full = SequenceMatcher(None, generated.lower(), target_evidence.lower()).ratio()
+
+    # 5. Exact match (very strict - rarely expected)
+    exact_match = generated.strip() == target_evidence.strip()
+
+    result = {
+        "status": "success",
+        "doc_id": doc_id,
+        "query": query,
+        "target_len": len(target_evidence),
+        "generated_len": len(generated),
+        "exact_match": exact_match,
+        "answer_in_generated": ans_in_gen,
+        "prefix_match": prefix_match,
+        "prefix_similarity": prefix_similarity,
+        # Truncated metrics (fair comparison)
+        "token_overlap_truncated": token_overlap_truncated,
+        "char_similarity_truncated": char_similarity_truncated,
+        # Full metrics (for reference)
+        "token_overlap_full": token_overlap_full,
+        "char_similarity_full": char_similarity_full,
+        "target_snippet": target_evidence[:200],
+        "generated_snippet": generated[:200],
+    }
+
+    # Log verdict
+    logger.info("\n" + "=" * 50)
+    logger.info("OVERFIT TEST RESULTS")
+    logger.info("=" * 50)
+    logger.info(f"  Answer in generated: {ans_in_gen}")
+    logger.info(f"  Prefix match (first 50 chars): {prefix_match} ({prefix_similarity*100:.1f}%)")
+    logger.info(f"  --- Truncated comparison (gen[:target_len]) ---")
+    logger.info(f"  Token overlap (truncated): {token_overlap_truncated*100:.1f}%")
+    logger.info(f"  Char similarity (truncated): {char_similarity_truncated*100:.1f}%")
+    logger.info(f"  --- Full comparison (reference) ---")
+    logger.info(f"  Token overlap (full): {token_overlap_full*100:.1f}%")
+    logger.info(f"  Char similarity (full): {char_similarity_full*100:.1f}%")
+    logger.info(f"  Exact match: {exact_match}")
+
+    # Verdict based on truncated metrics (fair comparison for generative models)
+    # Primary: prefix_match + answer_in_gen → pipeline is working
+    # Secondary: char_similarity_truncated → degree of memorization
+    if prefix_match and ans_in_gen:
+        logger.info("VERDICT: PASS - Generated starts correctly and contains answer (pipeline OK)")
+        result["verdict"] = "PASS"
+    elif char_similarity_truncated > 0.7:
+        logger.info("VERDICT: PASS - High similarity when truncated (pipeline OK)")
+        result["verdict"] = "PASS"
+    elif ans_in_gen and char_similarity_truncated > 0.4:
+        logger.warning("VERDICT: PARTIAL - Contains answer but incomplete memorization")
+        result["verdict"] = "PARTIAL"
+    else:
+        logger.error("VERDICT: FAIL - Cannot memorize sample (check pipeline)")
+        result["verdict"] = "FAIL"
+
+    logger.info("=" * 50)
+
+    # Save result
+    save_json(result, Path(dataset_path).parent.parent / "02_train" / "overfit_test_result.json")
+
+    return result
 
 
 def create_run_directory(args) -> Path:
@@ -460,6 +645,14 @@ def print_summary(results: dict, run_dir: Path, logger):
         if "a1_delta" in reg:
             print(f"  A1 Top-1 drop: {reg['a1_delta']['top1_drop']*100:+.1f}%")
 
+    if "overfit_test" in results:
+        ot = results["overfit_test"]
+        print(f"\nOverfit Test: {ot.get('verdict', 'N/A')}")
+        print(f"  Prefix match: {ot.get('prefix_match', False)} ({ot.get('prefix_similarity', 0)*100:.1f}%)")
+        print(f"  Char similarity (truncated): {ot.get('char_similarity_truncated', 0)*100:.1f}%")
+        print(f"  Token overlap (truncated): {ot.get('token_overlap_truncated', 0)*100:.1f}%")
+        print(f"  Answer in generated: {ot.get('answer_in_generated', False)}")
+
     print("\nKey artifacts:")
     print("  1. 02_train/checkpoints/best.pt_lora/")
     print("  2. 03_eval/samples/eyeball_20_best.md")
@@ -488,7 +681,10 @@ def main():
     logger.info(f"Device: {args.device}")
     logger.info(f"Seed: {args.seed}")
 
-    if args.smoke_test:
+    if args.overfit_test:
+        logger.info("MODE: OVERFIT TEST (1-sample pipeline verification)")
+        logger.info(f"  Steps: {args.overfit_steps}")
+    elif args.smoke_test:
         logger.info("MODE: SMOKE TEST")
     elif args.eval_only:
         logger.info("MODE: EVAL ONLY")
@@ -525,6 +721,14 @@ def main():
 
         from data.build_phase1_5_evidence_dataset import build_evidence_dataset
 
+        # Warn if deprecated option used
+        if args.add_end_marker and not args.use_eos_token:
+            logger.warning("=" * 60)
+            logger.warning("WARNING: --add_end_marker is DEPRECATED")
+            logger.warning("This causes LoRA collapse (model outputs 'END END END...')")
+            logger.warning("Use --use_eos_token instead for clean single-token stopping.")
+            logger.warning("=" * 60)
+
         with Timer("Dataset Build"):
             dataset_stats = build_evidence_dataset(
                 corpus_dir=args.corpus_dir,
@@ -535,6 +739,10 @@ def main():
                 context_sentences=args.context_sentences,
                 tokenizer_name="Qwen/Qwen3-8B",
                 seed=args.seed,
+                drop_fallback=args.drop_fallback,
+                add_end_marker=args.add_end_marker,
+                use_eos_token=args.use_eos_token,
+                drop_multi_entity_incomplete=args.drop_multi_entity_incomplete,
             )
             results["dataset"] = dataset_stats
 
@@ -567,7 +775,14 @@ def main():
             "tune_projection": args.tune_projection,
         }
 
-        max_samples = 20 if args.smoke_test else None
+        if args.overfit_test:
+            max_samples = 1
+            # For overfit test, we want many iterations over 1 sample
+            train_config["epochs"] = args.overfit_steps
+        elif args.smoke_test:
+            max_samples = 20
+        else:
+            max_samples = None
 
         with Timer("LoRA Training"):
             train_results = run_phase15_training(
@@ -581,12 +796,56 @@ def main():
             )
             results["training"] = train_results
 
-    # Load pre-trained checkpoint if provided
+        # For overfit test: generate from the same sample and compare
+        if args.overfit_test:
+            logger.info("\n" + "=" * 50)
+            logger.info("OVERFIT TEST: Checking if model memorized the sample")
+            logger.info("=" * 50)
+            results["overfit_test"] = run_overfit_verification(
+                model, z_pool, tokenizer, dataset_path, args.max_new_tokens, args.device, logger
+            )
+
+    # Load LoRA checkpoint for evaluation
+    # Priority: 1) --phase15_ckpt (explicit), 2) current run's best.pt_lora (after training or resume)
+    lora_ckpt_path = None
+
     if args.phase15_ckpt:
-        logger.info(f"Loading Phase 1.5 LoRA checkpoint: {args.phase15_ckpt}")
+        lora_ckpt_path = Path(args.phase15_ckpt)
+    else:
+        # Auto-load from current run directory (works for both just-completed training and resume)
+        auto_lora_path = run_dir / "02_train" / "checkpoints" / "best.pt_lora"
+        if auto_lora_path.exists():
+            lora_ckpt_path = auto_lora_path
+            if args.skip_training:
+                logger.info(f"Auto-detected LoRA checkpoint from resume_dir: {lora_ckpt_path}")
+            else:
+                logger.info(f"Auto-loading LoRA from just-completed training: {lora_ckpt_path}")
+
+    if lora_ckpt_path:
+        if not lora_ckpt_path.exists():
+            raise FileNotFoundError(f"LoRA checkpoint not found: {lora_ckpt_path}")
+
+        # Check if model already has LoRA (from just-completed training)
         from peft import PeftModel
-        model.llm = PeftModel.from_pretrained(model.llm, args.phase15_ckpt)
-        logger.info("LoRA checkpoint loaded")
+        if isinstance(model.llm, PeftModel):
+            # Training just completed - LoRA already in memory, no need to reload
+            logger.info("LoRA already attached from training - skipping checkpoint reload")
+            logger.info(f"Active LoRA adapters: {model.llm.active_adapters}")
+        else:
+            # Need to load LoRA checkpoint (skip_training or eval_only mode)
+            logger.info(f"Loading Phase 1.5 LoRA checkpoint: {lora_ckpt_path}")
+            model.llm = PeftModel.from_pretrained(model.llm, str(lora_ckpt_path))
+            logger.info("LoRA checkpoint loaded successfully")
+
+            # Verify LoRA is active
+            if hasattr(model.llm, 'active_adapters'):
+                logger.info(f"Active LoRA adapters: {model.llm.active_adapters}")
+    elif not args.skip_eval:
+        logger.warning("=" * 50)
+        logger.warning("WARNING: No LoRA checkpoint loaded!")
+        logger.warning("Evaluation will use base model without LoRA fine-tuning.")
+        logger.warning("Results may not reflect trained model performance.")
+        logger.warning("=" * 50)
 
     # =========================================================================
     # DELIVERABLE 3: Evaluation
